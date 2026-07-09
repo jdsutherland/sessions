@@ -102,20 +102,20 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 
 ### Options
 
-| Flag / Command  | Description                                                                              |
-| --------------- | ---------------------------------------------------------------------------------------- |
+| Flag / Command  | Description                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------- |
 | `context`       | Print a markdown context primer for the current repo (see [Context primer](#context-primer)) |
-| `report`        | Generate a usage report (see [Usage reports](#usage-reports))                            |
-| `setup`         | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection) |
-| `uninstall`     | Remove plugin, MCP config, and the SessionStart hook from all tools                      |
-| `cleanup`       | Full reset: uninstall plugin + clear search index                                        |
-| `--here`        | Scope to the current git repo (default: all projects)                                    |
-| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                               |
-| `--errored`     | Only show sessions that hit an error                                                     |
-| `--mcp`         | Start as an MCP server (stdio transport)                                                 |
-| `--clear-cache` | Remove the search index (rebuilds on next use)                                           |
-| `--no-color`    | Disable colored output                                                                   |
-| `-h`, `--help`  | Show help                                                                                |
+| `report`        | Generate a usage report (see [Usage reports](#usage-reports))                                |
+| `setup`         | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)     |
+| `uninstall`     | Remove plugin, MCP config, and the SessionStart hook from all tools                          |
+| `cleanup`       | Full reset: uninstall plugin + clear search index                                            |
+| `--here`        | Scope to the current git repo (default: all projects)                                        |
+| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                                   |
+| `--errored`     | Only show sessions that hit an error                                                         |
+| `--mcp`         | Start as an MCP server (stdio transport)                                                     |
+| `--clear-cache` | Remove the search index (rebuilds on next use)                                               |
+| `--no-color`    | Disable colored output                                                                       |
+| `-h`, `--help`  | Show help                                                                                    |
 
 ### Browsing
 
@@ -174,13 +174,13 @@ For Claude Code sessions, the command includes `--resume <session-id>`. For Pi a
 
 The MCP server exposes five tools:
 
-| Tool                   | Description                                                                                     |
-| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| Tool                   | Description                                                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `search_sessions`      | Search across sessions by keyword; returns snippets, files/commands involved, an errored flag, and a ready-to-run resume command |
-| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit                        |
-| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries   |
-| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours            |
-| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work    |
+| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit                                                         |
+| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                    |
+| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                             |
+| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                     |
 
 The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (default) returns topics and file paths only, `"highlights"` adds first and last user messages for substantive sessions (best for summaries), and `"full"` includes all user messages per session.
 
@@ -238,20 +238,20 @@ The selected period is shown prominently at the top of both outputs (and in the 
 
 ### Report options
 
-| Flag                                                                        | Description                                                                                                    |
-| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--format json\|html\|both`                                                 | What to emit. Default `html`.                                                                                  |
+| Flag                                                                        | Description                                                                                                                                     |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--format json\|html\|both`                                                 | What to emit. Default `html`.                                                                                                                   |
 | `--out <path>`                                                              | Save output instead of opening in the browser. For `both`, a directory → `usage-report.json` + `report.html`; for a single format, a file path. |
-| `--here`                                                                    | Restrict to the current project.                                                                               |
-| `--from YYYY-MM-DD` / `--to YYYY-MM-DD`                                     | Inclusive local-date range. Default: all time.                                                                 |
-| `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                    |
-| `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                              |
-| `--month YYYY-MM`                                                           | A specific calendar month.                                                                                     |
-| `--tool claude\|codex\|pi`                                                  | Restrict to one tool. Default: all three.                                                                      |
-| `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                 |
-| `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                          |
-| `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                    |
-| `--refresh-pricing`                                                         | Force a pricing refresh even if the cache is fresh.                                                            |
+| `--here`                                                                    | Restrict to the current project.                                                                                                                |
+| `--from YYYY-MM-DD` / `--to YYYY-MM-DD`                                     | Inclusive local-date range. Default: all time.                                                                                                  |
+| `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                                                     |
+| `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                                                               |
+| `--month YYYY-MM`                                                           | A specific calendar month.                                                                                                                      |
+| `--tool claude\|codex\|pi`                                                  | Restrict to one tool. Default: all three.                                                                                                       |
+| `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                                                  |
+| `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                                                           |
+| `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                                                     |
+| `--refresh-pricing`                                                         | Force a pricing refresh even if the cache is fresh.                                                                                             |
 
 ### What's in the report
 
