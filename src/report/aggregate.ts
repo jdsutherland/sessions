@@ -102,7 +102,7 @@ function buildFreshDaily(enriched: EnrichedEvent[]): DailyEntry[] {
         cost: 0,
         sessions: new Set(),
         messages: 0,
-        hourCounts: new Array<number>(24).fill(0),
+        hourCounts: Array.from({ length: 24 }, () => 0),
         byTool: new Map(),
         byProvider: new Map(),
         byModel: new Map(),
@@ -224,7 +224,7 @@ function deriveTopLevel(daily: DailyEntry[]) {
     { tool: ToolId; provider: string; id: string; tokens: number; costUSD: number; sessions: number; messages: number }
   >();
   const byProjectMap = new Map<string, { tokens: number; costUSD: number; sessions: number }>();
-  const hourCounts = new Array<number>(24).fill(0);
+  const hourCounts = Array.from({ length: 24 }, () => 0);
   let totalTokens = 0,
     totalCost = 0,
     totalMessages = 0,
@@ -405,7 +405,7 @@ export function computeInsights(daily: DailyEntry[], prs: PullRequest[], tz: str
   });
 
   const weeks = new Map<string, WeekSlot>();
-  const weekdayCounts = new Array<number>(7).fill(0);
+  const weekdayCounts = Array.from({ length: 7 }, () => 0);
 
   // 1. Accumulate per-week activity from daily entries.
   for (const d of daily) {
