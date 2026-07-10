@@ -38,7 +38,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command.',
+  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange.',
   {
     query: z
       .string()
@@ -54,37 +54,54 @@ server.tool(
   async ({ query, tool, project, errored, limit }) => runSearchSessions({ query, tool, project, errored, limit }),
 );
 
+// Exported, testable seam like runSearchSessions: the get_session_messages tool
+// delegates here so the search-hit → offset alignment can be integration-tested
+// without MCP plumbing. Pagination runs over getSessionMessages, whose numbering
+// is identical to the msg_index search hits carry (both derive from extractMessages).
+export async function runGetSessionMessages(args: {
+  filePath: string;
+  offset?: number;
+  limit?: number;
+}): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+  const offset = args.offset ?? 0;
+  const limit = args.limit ?? 20;
+
+  let raw: string;
+  try {
+    raw = await Bun.file(args.filePath).text();
+  } catch {
+    return { content: [{ type: 'text' as const, text: `Could not read file: ${args.filePath}` }], isError: true };
+  }
+
+  const lines = raw.trimEnd().split('\n');
+  const allMessages = getSessionMessages(lines);
+  const page = allMessages.slice(offset, offset + limit);
+
+  const result = {
+    total: allMessages.length,
+    offset,
+    returned: page.length,
+    messages: page.map((m) => ({ role: m.role, text: m.text })),
+  };
+
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+  };
+}
+
 server.tool(
   'get_session_messages',
-  'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated.',
+  'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions as the offset to start at the matched message.',
   {
     filePath: z.string().describe('Path to the session JSONL file (from search_sessions results)'),
-    offset: z.number().optional().default(0).describe('Message index to start from (default 0)'),
+    offset: z
+      .number()
+      .optional()
+      .default(0)
+      .describe('Message index to start from (default 0). messageHits[].index values from search_sessions align 1:1.'),
     limit: z.number().optional().default(20).describe('Max messages to return (default 20)'),
   },
-  async ({ filePath, offset, limit }) => {
-    let raw: string;
-    try {
-      raw = await Bun.file(filePath).text();
-    } catch {
-      return { content: [{ type: 'text' as const, text: `Could not read file: ${filePath}` }], isError: true };
-    }
-
-    const lines = raw.trimEnd().split('\n');
-    const allMessages = getSessionMessages(lines);
-    const page = allMessages.slice(offset, offset + limit);
-
-    const result = {
-      total: allMessages.length,
-      offset,
-      returned: page.length,
-      messages: page.map((m) => ({ role: m.role, text: m.text })),
-    };
-
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
-    };
-  },
+  async ({ filePath, offset, limit }) => runGetSessionMessages({ filePath, offset, limit }),
 );
 
 server.tool(

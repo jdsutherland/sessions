@@ -51,6 +51,33 @@ beforeAll(async () => {
     ].join('\n'),
   );
 
+  // Session B: multi-message session for hit→offset alignment — the unique term
+  // sits in the third message (index 2), so a correct offset is load-bearing.
+  writeFileSync(
+    join(dir, 'b.jsonl'),
+    [
+      j({
+        type: 'user',
+        cwd: '/repoB',
+        timestamp: '2026-06-02T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'investigate the flaky retry test' }] },
+        promptSource: 'typed',
+      }),
+      j({
+        type: 'assistant',
+        cwd: '/repoB',
+        timestamp: '2026-06-02T10:01:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'looking into it now' }] },
+      }),
+      j({
+        type: 'assistant',
+        cwd: '/repoB',
+        timestamp: '2026-06-02T10:02:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'applied the mangowurzel fix to the retry logic' }] },
+      }),
+    ].join('\n'),
+  );
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -77,4 +104,26 @@ test('search_sessions handler returns metadata + resumeCommand', async () => {
 test('search_sessions handler honors the errored filter', async () => {
   const res = await mcp.runSearchSessions({ errored: true });
   expect(res.content[0]!.text).toContain('No sessions found'); // session A did not error
+});
+
+// ——— message-granularity (schema v7) tests — additive ———
+
+test('alignment: messageHits[0].index feeds get_session_messages(offset) to the matched text', async () => {
+  const res = await mcp.runSearchSessions({ query: 'mangowurzel' });
+  const parsed = JSON.parse(res.content[0]!.text);
+  const hit = parsed[0].messageHits[0];
+  expect(hit.index).toBe(2);
+  expect(hit.role).toBe('assistant');
+
+  const page = await mcp.runGetSessionMessages({ filePath: parsed[0].filePath, offset: hit.index, limit: 1 });
+  const paged = JSON.parse(page.content[0]!.text);
+  expect(paged.returned).toBe(1);
+  expect(paged.messages[0].text).toContain('mangowurzel');
+});
+
+test('search_sessions: a metadata-only match carries empty messageHits', async () => {
+  const res = await mcp.runSearchSessions({ query: 'kubectl' }); // lives only in commands
+  const parsed = JSON.parse(res.content[0]!.text);
+  const a = parsed.find((r: { sessionId: string }) => r.sessionId === 'a');
+  expect(a.messageHits).toEqual([]);
 });

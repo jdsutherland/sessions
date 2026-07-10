@@ -1,7 +1,8 @@
 import { test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Database } from 'bun:sqlite';
 
 const j = (o: unknown): string => JSON.stringify(o);
 
@@ -84,6 +85,29 @@ beforeAll(async () => {
     },
   ]);
 
+  // Session C: message-granularity fixture — a genuine typed turn (msg 0), an
+  // injected non-genuine turn (msg 1, consumes an index but must not be indexed),
+  // and an assistant turn (msg 2). Each carries a unique term for localization.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'c', '/repoC', [
+    {
+      type: 'user',
+      timestamp: '2026-06-03T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'question about flurbnozzle behavior' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-03T10:01:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'sneakyinjected payload from a skill load' }] },
+      promptSource: null,
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-03T10:02:00Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'the grobblewick answer lives here' }] },
+    },
+  ]);
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -126,6 +150,87 @@ test('errored filter and metadata: only errored sessions, with files/commands/er
   expect(a.errored).toBe(true);
   expect(a.commands).toContain('docker compose up');
   expect(a.files).toContain('/repoA/src/cache.ts'); // read target surfaced in metadata
+});
+
+// ——— message-granularity (schema v7) tests — additive; do not modify cases above ———
+
+function messageRowCount(filePath: string): number {
+  // Independent read-only connection (WAL allows concurrent readers) to assert
+  // row-level state that the search API alone can't prove.
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    const row = db
+      .query<{ n: number }, [string]>('SELECT COUNT(*) AS n FROM message_fts WHERE file_path = ?')
+      .get(filePath);
+    return row?.n ?? 0;
+  } finally {
+    db.close();
+  }
+}
+
+const cPath = () => join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'c.jsonl');
+
+test('localization: a term seeded only in message N yields messageHits[0].index === N', async () => {
+  const r = await cache.searchSessions('grobblewick', {});
+  const c = r.find((x) => x.sessionId === 'c')!;
+  expect(c).toBeDefined();
+  expect(c.messageHits![0]!.index).toBe(2);
+  expect(c.messageHits![0]!.role).toBe('assistant');
+  expect(c.messageHits![0]!.snippet).toContain('grobblewick');
+  expect(c.displayText).toContain('grobblewick'); // localized snippet is the display text
+});
+
+test('localization: a genuine user-turn hit carries index 0 and role user', async () => {
+  const r = await cache.searchSessions('flurbnozzle', {});
+  const c = r.find((x) => x.sessionId === 'c')!;
+  expect(c).toBeDefined();
+  expect(c.messageHits![0]!.index).toBe(0);
+  expect(c.messageHits![0]!.role).toBe('user');
+});
+
+test('non-genuine user turn text is not searchable, but its index is still counted', async () => {
+  const r = await cache.searchSessions('sneakyinjected', {});
+  expect(r.map((x) => x.sessionId)).not.toContain('c');
+  // The injected turn consumed index 1: the assistant hit sits at 2, not 1.
+  const g = await cache.searchSessions('grobblewick', {});
+  expect(g.find((x) => x.sessionId === 'c')!.messageHits![0]!.index).toBe(2);
+});
+
+test('metadata-only match (command term) returns the session with empty messageHits', async () => {
+  const r = await cache.searchSessions('docker', {});
+  const a = r.find((x) => x.sessionId === 'a')!;
+  expect(a).toBeDefined(); // "docker compose up" lives only in the commands column
+  expect(a.messageHits).toEqual([]);
+});
+
+test('message_fts rows: genuine user + assistant turns only (injected turn gets no row)', () => {
+  expect(messageRowCount(cPath())).toBe(2); // indices 0 and 2; index 1 skipped-but-counted
+});
+
+test('re-index idempotency: an mtime touch leaves no duplicate message rows', async () => {
+  const future = new Date(Date.now() + 5000);
+  utimesSync(cPath(), future, future);
+  await cache.refreshIndex();
+  expect(messageRowCount(cPath())).toBe(2);
+  const r = await cache.searchSessions('grobblewick', {});
+  expect(r.filter((x) => x.sessionId === 'c')).toHaveLength(1);
+  expect(r.find((x) => x.sessionId === 'c')!.messageHits).toHaveLength(1);
+});
+
+test('pruning: deleting the file empties both FTS tables for it', async () => {
+  const path = cPath();
+  rmSync(path);
+  await cache.refreshIndex();
+  expect(messageRowCount(path)).toBe(0);
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    const n = db.query<{ n: number }, [string]>('SELECT COUNT(*) AS n FROM session_fts WHERE file_path = ?').get(path);
+    expect(n?.n ?? 0).toBe(0);
+  } finally {
+    db.close();
+  }
+  const r = await cache.searchSessions('grobblewick', {});
+  expect(r.map((x) => x.sessionId)).not.toContain('c');
 });
 
 test('hardening: busy_timeout is set and a corrupt DB rebuilds instead of throwing', async () => {

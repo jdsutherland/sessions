@@ -34,7 +34,13 @@ export function formatLine(r: SessionResult, cols: number): string {
 
   const warn = r.errored ? `${C.red}⚠${C.reset} ` : '';
 
-  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${warn}${truncated}`;
+  // The prompt already is the top message-hit snippet when search localized one;
+  // the badge names which message it came from (fzf shows one line per entry, so
+  // the index rides inline rather than on an indented second line).
+  const hit = r.messageHits?.[0];
+  const hitBadge = hit ? `${C.dim}msg#${hit.index}${C.reset} ` : '';
+
+  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${warn}${hitBadge}${truncated}`;
 
   // tab-separated: cwd, tool, sessionId, exists, prompt, display
   return `${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;
