@@ -73,7 +73,10 @@ beforeAll(async () => {
         type: 'assistant',
         cwd: '/repoB',
         timestamp: '2026-06-02T10:02:00Z',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'applied the mangowurzel fix to the retry logic' }] },
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'applied the mangowurzel fix to the retry logic' }],
+        },
       }),
     ].join('\n'),
   );
@@ -126,4 +129,47 @@ test('search_sessions: a metadata-only match carries empty messageHits', async (
   const parsed = JSON.parse(res.content[0]!.text);
   const a = parsed.find((r: { sessionId: string }) => r.sessionId === 'a');
   expect(a.messageHits).toEqual([]);
+});
+
+// ——— get_session_digest (phase 2) tests — additive ———
+
+test('get_session_digest returns exchange shape within budget', async () => {
+  const res = await mcp.runGetSessionDigest({ filePath: join(tmp, 'claude', 'proj', 'b.jsonl') });
+  expect(res.isError).toBeUndefined();
+  const digest = JSON.parse(res.content[0]!.text);
+  expect(digest.messageCount).toBe(3);
+  expect(digest.exchangeCount).toBe(1);
+  expect(digest.elided).toBe(0);
+  expect(digest.exchanges).toHaveLength(1);
+  expect(digest.exchanges[0].index).toBe(0);
+  expect(digest.exchanges[0].user).toContain('investigate the flaky retry test');
+  expect(digest.exchanges[0].assistant).toContain('mangowurzel'); // last assistant wins
+  expect(JSON.stringify(digest).length).toBeLessThanOrEqual(8000);
+});
+
+test('get_session_digest flags unreadable files with isError', async () => {
+  const res = await mcp.runGetSessionDigest({ filePath: join(tmp, 'nope', 'missing.jsonl') });
+  expect(res.isError).toBe(true);
+  expect(res.content[0]!.text).toContain('Could not read file');
+});
+
+test('get_session_digest returns empty exchanges for sessions with no genuine turns', async () => {
+  // Standalone fixture outside the scanned dirs — the digest reads files directly.
+  const file = join(tmp, 'hook-only.jsonl');
+  writeFileSync(
+    file,
+    [
+      j({
+        type: 'user',
+        timestamp: '2026-06-03T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'injected hook context' }] },
+        promptSource: null,
+      }),
+    ].join('\n'),
+  );
+  const res = await mcp.runGetSessionDigest({ filePath: file });
+  expect(res.isError).toBeUndefined();
+  const digest = JSON.parse(res.content[0]!.text);
+  expect(digest.exchanges).toEqual([]);
+  expect(digest.messageCount).toBe(1);
 });

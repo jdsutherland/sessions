@@ -362,14 +362,10 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       branch,
     ],
   );
-  db.run('INSERT INTO session_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)', [
-    filePath,
-    headline,
-    commandsText,
-    pathsText,
-    contextText,
-    thinking,
-  ]);
+  db.run(
+    'INSERT INTO session_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
+    [filePath, headline, commandsText, pathsText, contextText, thinking],
+  );
   // Message rows: assistant turns always; user turns only when genuine — injected
   // skill bodies and tool results match everything and are exactly the noise the
   // trust fixes eliminated elsewhere. Their indices are still consumed by the
@@ -621,6 +617,23 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     errored: r.errored === 1,
     messageHits: hitsByPath.get(r.file_path) ?? [],
   }));
+}
+
+/**
+ * Resolve a session id to its indexed JSONL file path. Refreshes the index
+ * first (same as searchSessions) so recently created sessions resolve too.
+ * Collisions — the same id indexed from multiple files — pick the newest by
+ * mtime. Returns null when the id is unknown.
+ */
+export async function resolveSessionFile(sessionId: string): Promise<string | null> {
+  const db = getDb();
+  await refreshIndex();
+  const row = db
+    .query<{ file_path: string }, [string]>(
+      'SELECT file_path FROM sessions WHERE session_id = ? ORDER BY mtime DESC LIMIT 1',
+    )
+    .get(sessionId);
+  return row?.file_path ?? null;
 }
 
 interface DateRangeRow {

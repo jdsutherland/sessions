@@ -63,6 +63,13 @@ if (Bun.argv.includes('context')) {
   process.exit(0);
 }
 
+if (Bun.argv.includes('digest')) {
+  const i = Bun.argv.indexOf('digest');
+  const { parseDigestArgs, runDigest } = await import('./src/digest.ts');
+  await runDigest(parseDigestArgs(Bun.argv.slice(i + 1)));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

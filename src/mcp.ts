@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { searchSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
 import { formatResult } from './search-format';
 import { getSessionMessages } from './parser';
+import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
 import { type Tool } from './types';
 
@@ -38,7 +39,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange.',
+  "Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit's index as the offset to get_session_messages to jump straight to the matched exchange.",
   {
     query: z
       .string()
@@ -102,6 +103,31 @@ server.tool(
     limit: z.number().optional().default(20).describe('Max messages to return (default 20)'),
   },
   async ({ filePath, offset, limit }) => runGetSessionMessages({ filePath, offset, limit }),
+);
+
+// Exported, testable seam like runGetSessionMessages: the get_session_digest tool
+// delegates here so the digest shape and budget can be tested without MCP plumbing.
+export async function runGetSessionDigest(args: {
+  filePath: string;
+}): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+  let raw: string;
+  try {
+    raw = await Bun.file(args.filePath).text();
+  } catch {
+    return { content: [{ type: 'text' as const, text: `Could not read file: ${args.filePath}` }], isError: true };
+  }
+
+  const digest = buildSessionDigest(raw.trimEnd().split('\n'));
+  return { content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }] };
+}
+
+server.tool(
+  'get_session_digest',
+  'The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with the final assistant reply of its exchange. Prefer this over paging get_session_messages when you need the whole story — opening intent, key decisions, closing state. Long sessions elide middle exchanges (elided > 0) but always keep the first and last. To expand any exchange, pass its exchanges[].index as the offset to get_session_messages. Empty exchanges means no genuine human turns — fall back to get_session_messages.',
+  {
+    filePath: z.string().describe('Path to the session JSONL file (from search_sessions results)'),
+  },
+  async ({ filePath }) => runGetSessionDigest({ filePath }),
 );
 
 server.tool(
