@@ -96,26 +96,30 @@ sessions <query>             # Full-text search across session content
 sessions --here              # Scope to current git repo only
 sessions --tool claude       # Filter to Claude Code sessions only
 sessions --errored           # Only sessions that hit an error
+sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
+sessions digest <session>    # Print one session's arc as compact markdown
 sessions report              # Usage report (HTML dashboard, opens in browser)
 ```
 
 ### Options
 
-| Flag / Command  | Description                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------- |
-| `context`       | Print a markdown context primer for the current repo (see [Context primer](#context-primer)) |
-| `report`        | Generate a usage report (see [Usage reports](#usage-reports))                                |
-| `setup`         | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)     |
-| `uninstall`     | Remove plugin, MCP config, and the SessionStart hook from all tools                          |
-| `cleanup`       | Full reset: uninstall plugin + clear search index                                            |
-| `--here`        | Scope to the current git repo (default: all projects)                                        |
-| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                                   |
-| `--errored`     | Only show sessions that hit an error                                                         |
-| `--mcp`         | Start as an MCP server (stdio transport)                                                     |
-| `--clear-cache` | Remove the search index (rebuilds on next use)                                               |
-| `--no-color`    | Disable colored output                                                                       |
-| `-h`, `--help`  | Show help                                                                                    |
+| Flag / Command     | Description                                                                                                                                                          |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                         |
+| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id |
+| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                        |
+| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                             |
+| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
+| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                    |
+| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                |
+| `--tool <name>`    | Filter by tool: `claude`, `codex`, or `pi`                                                                                                                           |
+| `--errored`        | Only show sessions that hit an error                                                                                                                                 |
+| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                              |
+| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                             |
+| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                       |
+| `--no-color`       | Disable colored output                                                                                                                                               |
+| `-h`, `--help`     | Show help                                                                                                                                                            |
 
 ### Browsing
 
@@ -139,7 +143,7 @@ Pass a query to run a full-text search across all sessions:
 sessions "rate limit"
 ```
 
-The CLI uses the same search index as the MCP server: results are ranked by relevance (BM25) rather than recency, matching uses porter stemming (`refactor` matches `refactoring`), and multi-word queries match sessions containing _any_ of the terms with the closest matches first. Search covers both your messages and the assistant's replies; system-injected content (`<system-reminder>`, etc.) is stripped from your messages so you only match what you actually typed. Matching sessions are shown with a snippet of context, then piped into fzf.
+The CLI uses the same search index as the MCP server: results are ranked by relevance (BM25) rather than recency, matching uses porter stemming (`refactor` matches `refactoring`), and multi-word queries match sessions containing _any_ of the terms with the closest matches first. Search covers both your messages and the assistant's replies; system-injected content (`<system-reminder>`, etc.) is stripped from your messages so you only match what you actually typed. Search is message-granular: each matching session is shown with the best-matching message's snippet and its `msg#N` index, then piped into fzf.
 
 ### After selection
 
@@ -172,15 +176,18 @@ For Claude Code sessions, the command includes `--resume <session-id>`. For Pi a
 
 ### MCP tools
 
-The MCP server exposes five tools:
+The MCP server exposes six tools:
 
-| Tool                   | Description                                                                                                                      |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `search_sessions`      | Search across sessions by keyword; returns snippets, files/commands involved, an errored flag, and a ready-to-run resume command |
-| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit                                                         |
-| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                    |
-| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                             |
-| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                     |
+| Tool                   | Description                                                                                                                                                                                                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_sessions`      | Search across sessions by keyword; each result includes snippets, files/commands, an errored flag, a resume command, and `messageHits` — the specific matching messages (index, role, snippet). A `files` filter answers "which sessions touched this file?" (newest first) |
+| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit — pass a `messageHits[].index` from search (or an `exchanges[].index` from the digest) as the offset to jump straight to the matched exchange                                                      |
+| `get_session_digest`   | The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with its exchange's final assistant reply. Long sessions elide middle exchanges, never the ends                                                                                |
+| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                               |
+| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                                                                                                                                                                        |
+| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                |
+
+Together the first three support the recall flow the bundled skills teach: search localizes the hit to a message, the digest gives a session's whole arc in one call, and targeted message reads expand only the exchanges that matter — no paging full transcripts.
 
 The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (default) returns topics and file paths only, `"highlights"` adds first and last user messages for substantive sessions (best for summaries), and `"full"` includes all user messages per session.
 
@@ -188,13 +195,13 @@ The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (defau
 
 The plugin ships five skills that compose the MCP tools into repeatable workflows:
 
-| Skill              | Trigger                                     | What it does                                                      |
-| ------------------ | ------------------------------------------- | ----------------------------------------------------------------- |
-| `/context`         | "what was I doing here", "catch me up"      | Repo-scoped primer: prior decisions, dead ends, the open thread   |
-| `/recall`          | "what did I do on [project]"                | Searches sessions by project/topic, shows chronological history   |
-| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack      |
-| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report |
-| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap      |
+| Skill              | Trigger                                     | What it does                                                                               |
+| ------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `/context`         | "what was I doing here", "catch me up"      | Repo-scoped primer: prior decisions, dead ends, the open thread                            |
+| `/recall`          | "what did I do on [project]"                | Searches by topic or file, digests the best candidates, expands only the matched exchanges |
+| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack                               |
+| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report                          |
+| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap                               |
 
 Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
 
@@ -289,7 +296,7 @@ Each session file is parsed to extract:
 
 ### Search index
 
-Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/sessions/index.db`. The index is built automatically on first use (~5s for thousands of sessions) and updated incrementally on subsequent runs by checking file modification times — only new or changed sessions are re-indexed.
+Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/sessions/index.db`. Messages are indexed individually, so a hit localizes to the exact message that matched — not just the session. The index is built automatically on first use (~5s for thousands of sessions) and updated incrementally on subsequent runs by checking file modification times — only new or changed sessions are re-indexed.
 
 To clear the index and force a full rebuild:
 
