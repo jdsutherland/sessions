@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
   customTitle,
+  extractMessages,
   firstTimestamp,
   messageCount,
   firstPrompt,
@@ -209,6 +210,84 @@ describe('getSessionMessages', () => {
     );
     const msgs = getSessionMessages(lines);
     expect(msgs).toHaveLength(2);
+  });
+});
+
+describe('extractMessages', () => {
+  // A typed turn, an assistant turn, a skill-injection turn (heuristic path — no
+  // promptSource), a promptSource-null turn (tool-result/injected style), and a
+  // closing assistant turn. Indices must be sequential over all five.
+  const mixed = jsonl(
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'refactor the parser' }] },
+    },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'on it' }] } },
+    {
+      type: 'user',
+      message: { content: [{ type: 'text', text: 'Base directory for this skill: /x\n\nSkill body here.' }] },
+    },
+    {
+      type: 'user',
+      promptSource: null,
+      message: { role: 'user', content: [{ type: 'text', text: 'injected tool payload' }] },
+    },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } },
+  );
+
+  test('numbering parity: indices, roles, and texts match getSessionMessages element-for-element', () => {
+    const extracted = extractMessages(mixed);
+    const legacy = getSessionMessages(mixed);
+    expect(extracted.length).toBe(legacy.length);
+    for (let i = 0; i < extracted.length; i++) {
+      expect(extracted[i]!.index).toBe(legacy[i]!.index);
+      expect(extracted[i]!.role).toBe(legacy[i]!.role);
+      expect(extracted[i]!.text).toBe(legacy[i]!.text);
+    }
+  });
+
+  test('genuine flags: typed true, skill-injection and promptSource-null false, assistant always true', () => {
+    expect(extractMessages(mixed).map((m) => m.genuine)).toEqual([true, true, false, false, true]);
+  });
+
+  test('non-genuine turns still consume indices (skipped-but-counted numbering)', () => {
+    const msgs = extractMessages(mixed);
+    expect(msgs.map((m) => m.index)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  test('empty input yields no messages', () => {
+    expect(extractMessages([])).toEqual([]);
+  });
+
+  test('single user-only session: one genuine message at index 0', () => {
+    const lines = jsonl({ type: 'user', message: { content: [{ type: 'text', text: 'just this' }] } });
+    const msgs = extractMessages(lines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({ role: 'user', index: 0, genuine: true });
+  });
+
+  test('non-genuine first turn still takes index 0; the real prompt gets index 1', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: null, message: { content: [{ type: 'text', text: 'injected opener' }] } },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => [m.index, m.genuine])).toEqual([
+      [0, false],
+      [1, true],
+    ]);
+  });
+
+  test('empty-text rows are excluded from numbering, matching getSessionMessages', () => {
+    const lines = jsonl(
+      { type: 'user', message: { content: [{ type: 'text', text: '' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'real question' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } },
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => m.index)).toEqual([0, 1]);
+    expect(msgs.map((m) => m.index)).toEqual(getSessionMessages(lines).map((m) => m.index));
   });
 });
 

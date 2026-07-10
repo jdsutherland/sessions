@@ -14,9 +14,11 @@ import {
   type ContextPrimer,
   type ContextSession,
   type ContextHeadline,
+  type MessageHit,
 } from './types';
 import {
   getCwdFromSession,
+  extractMessages,
   firstPrompt,
   lastTimestamp,
   getSessionMessages,
@@ -63,11 +65,12 @@ function getCodexDir(): string {
   return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
 }
 
-// Bump 5 -> 6: the FTS index gains headline/commands/paths/context_text/thinking
-// columns and the sessions table gains files_read/commands/errored/error_count, so
-// search can match (and weight) commands, file paths, errors, and reasoning. The
-// virtual-table shape changes, so getDb drops + rebuilds on a user_version mismatch.
-const SCHEMA_VERSION = 6;
+// Bump 6 -> 7: search becomes message-granular. A new message_fts table holds one
+// row per message (genuine user turns + assistant turns) carrying the parser's
+// message index, and session_fts slims to its genuinely session-level columns
+// (user_content/assistant_content move out — message text is stored exactly once).
+// The virtual-table shapes change, so getDb drops + rebuilds on a user_version mismatch.
+const SCHEMA_VERSION = 7;
 let _db: Database | null = null;
 
 export function clearCache(): void {
@@ -108,6 +111,7 @@ function openDb(): Database {
   if (!row || row.user_version !== SCHEMA_VERSION) {
     db.run('DROP TABLE IF EXISTS sessions');
     db.run('DROP TABLE IF EXISTS session_fts');
+    db.run('DROP TABLE IF EXISTS message_fts');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -134,20 +138,31 @@ function openDb(): Database {
       branch TEXT NOT NULL DEFAULT ''
     )
   `);
-  // `user_content` and `assistant_content` are separate columns so search can rank
-  // and snippet each independently (a match in the model's own diagnosis is just as
-  // findable as one in the prompt). `porter unicode61` adds stemming on top of the
-  // default unicode tokenizer so e.g. "refactoring" matches an indexed "refactor".
+  // Session-level searchable text only — message text lives in message_fts (one row
+  // per message) so a hit localizes to an exchange instead of a whole session.
+  // `porter unicode61` adds stemming on top of the default unicode tokenizer so
+  // e.g. "refactoring" matches an indexed "refactor".
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       file_path UNINDEXED,
       headline,
-      user_content,
-      assistant_content,
       commands,
       paths,
       context_text,
       thinking,
+      tokenize = 'porter unicode61'
+    )
+  `);
+  // One row per indexed message. msg_index mirrors the numbering getSessionMessages
+  // assigns (extractMessages is the single authority), so a search hit's index feeds
+  // get_session_messages(offset) directly. Manual sync, same as session_fts: indexFile
+  // deletes by file_path then re-inserts; refreshIndex prunes removed files.
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(
+      file_path UNINDEXED,
+      msg_index UNINDEXED,
+      role UNINDEXED,
+      text,
       tokenize = 'porter unicode61'
     )
   `);
@@ -300,18 +315,8 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const createdAt = firstTimestamp(lines);
   const msgCount = messageCount(lines);
 
-  const messages = getSessionMessages(lines);
-  const userContent = messages
-    .filter((m) => m.role === 'user')
-    .map((m) => m.text)
-    .join('\n');
-  const assistantContent = messages
-    .filter((m) => m.role === 'assistant')
-    .map((m) => m.text)
-    .join('\n');
-
+  const messages = extractMessages(lines);
   const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
-  const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
 
   const filesTouchedArr = extractFiles(lines, tool);
   const filesTouched = JSON.stringify(filesTouchedArr);
@@ -330,6 +335,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
 
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
     `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
@@ -357,9 +363,24 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     ],
   );
   db.run(
-    'INSERT INTO session_fts (file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-    [filePath, headline, fullContent, assistantContent, commandsText, pathsText, contextText, thinking],
+    'INSERT INTO session_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
+    [filePath, headline, commandsText, pathsText, contextText, thinking],
   );
+  // Message rows: assistant turns always; user turns only when genuine — injected
+  // skill bodies and tool results match everything and are exactly the noise the
+  // trust fixes eliminated elsewhere. Their indices are still consumed by the
+  // numbering (extractMessages counts them), they just get no FTS row. db.query()
+  // caches the prepared statement, which matters at ~74 rows/session; the calls run
+  // inside refreshIndex's per-batch transaction, never autocommit.
+  const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
+  for (const m of messages) {
+    if (m.role === 'user' && !m.genuine) continue;
+    insertMessage.run(filePath, m.index, m.role, m.text);
+  }
+  // Subagent transcripts have no place in the parent's message numbering, so their
+  // user text rides in a single sentinel row (msg_index -1): it keeps the session
+  // findable by subagent-only terms but is excluded from messageHits.
+  if (subagentContent) insertMessage.run(filePath, -1, 'user', subagentContent);
   return true;
 }
 
@@ -374,6 +395,7 @@ export async function refreshIndex(): Promise<{ total: number; updated: number }
     for (const r of removedPaths) {
       db.run('DELETE FROM sessions WHERE file_path = ?', [r.file_path]);
       db.run('DELETE FROM session_fts WHERE file_path = ?', [r.file_path]);
+      db.run('DELETE FROM message_fts WHERE file_path = ?', [r.file_path]);
     }
     if (removedPaths.length > 100) {
       db.exec('VACUUM');
@@ -398,6 +420,9 @@ export interface SearchOptions {
   tool?: Tool | '';
   project?: string;
   errored?: boolean;
+  /** Substring match against files_touched OR files_read; multiple values AND-compose.
+   *  Empty array = absent. With no query, filtered results order newest-first (created_at). */
+  files?: string[];
   limit?: number;
 }
 
@@ -427,6 +452,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   }
 
   let rows: SessionRow[];
+  const hitsByPath = new Map<string, MessageHit[]>();
 
   // Split the free-text query into individual quoted terms joined with OR. OR recall
   // (any term may match) paired with bm25() ranking surfaces the sessions matching the
@@ -441,64 +467,150 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     .map((w) => `"${w}"`);
   const ftsQuery = ftsTerms.join(' OR ');
 
-  // bm25 weights map to session_fts columns in declaration order:
-  // file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking.
-  // Favor headline/commands/paths; de-emphasize verbose thinking so it adds recall without dominating.
-  const RANK = 'bm25(session_fts, 0.0, 10.0, 3.0, 2.0, 6.0, 5.0, 2.0, 0.5)';
+  // Both branches filter the sessions table directly with the same conditions.
+  const conditions: string[] = [];
+  const condParams: (string | number)[] = [];
+  if (toolFilter) {
+    conditions.push('tool = ?');
+    condParams.push(toolFilter);
+  }
+  if (project) {
+    // Boundary-aware: the project root itself or a descendant, never a sibling
+    // sharing a prefix (e.g. `dotfiles-v2` must not match `dotfiles`).
+    conditions.push('(cwd = ? OR cwd GLOB ?)');
+    condParams.push(project, globPrefix(project));
+  }
+  if (opts.errored) conditions.push('errored = 1');
+  // Files filter: substring match over the JSON-array text columns — callers pass a
+  // path suffix or full path. Deliberately imprecise (a short fragment can match an
+  // unrelated longer path); precision comes from passing longer suffixes. LIKE
+  // metacharacters are escaped so paths with `_` (common) match literally.
+  const files = (opts.files ?? []).filter((f) => f.length > 0); // blank entries = absent, like an empty array
+  for (const f of files) {
+    conditions.push("(files_touched LIKE '%' || ? || '%' ESCAPE '\\' OR files_read LIKE '%' || ? || '%' ESCAPE '\\')");
+    const escaped = f.replace(/[\\%_]/g, (c) => `\\${c}`);
+    condParams.push(escaped, escaped);
+  }
 
   if (ftsQuery) {
-    const conditions: string[] = [];
-    const params: (string | number)[] = [ftsQuery];
+    // Session-level results merge two hit sources: the slimmed session_fts (metadata
+    // match) and message_fts aggregated by file_path (content match). Fetch both,
+    // join in JS on file_path, combine ranks, sort, slice to limit.
 
-    if (toolFilter) {
-      conditions.push('s.tool = ?');
-      params.push(toolFilter);
+    // bm25 weights map to session_fts columns in declaration order:
+    // file_path, headline, commands, paths, context_text, thinking.
+    // Favor headline/commands/paths; de-emphasize verbose thinking so it adds
+    // recall without dominating. Message text ranks via message_fts below.
+    const SESSION_RANK = 'bm25(session_fts, 0.0, 10.0, 6.0, 5.0, 2.0, 0.5)';
+    interface SessionHitRow {
+      file_path: string;
+      srank: number;
+      ssnippet: string | null;
     }
-    if (project) {
-      // Boundary-aware: the project root itself or a descendant, never a sibling
-      // sharing a prefix (e.g. `dotfiles-v2` must not match `dotfiles`).
-      conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
-      params.push(project, globPrefix(project));
-    }
-    if (opts.errored) conditions.push('s.errored = 1');
-    params.push(limit);
-
-    const extra = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-    rows = db
-      .query<SessionRow, any[]>(`
-      SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.created_at, s.first_prompt,
-             s.custom_title, s.message_count, s.files_touched, s.files_read, s.commands, s.errored,
-             snippet(session_fts, -1, '', '', '…', 32) as snippet
-      FROM session_fts f
-      JOIN sessions s ON s.file_path = f.file_path
-      WHERE f.session_fts MATCH ?
-      ${extra}
-      ORDER BY ${RANK}
-      LIMIT ?
+    const sessionHits = db
+      .query<SessionHitRow, [string]>(`
+      SELECT file_path, ${SESSION_RANK} AS srank, snippet(session_fts, -1, '', '', '…', 32) AS ssnippet
+      FROM session_fts WHERE session_fts MATCH ?
     `)
-      .all(...params);
+      .all(ftsQuery);
+
+    interface MessageHitRow {
+      file_path: string;
+      msg_index: number;
+      role: string;
+      mrank: number;
+      msnippet: string;
+    }
+    const messageRows = db
+      .query<MessageHitRow, [string]>(`
+      SELECT file_path, msg_index, role,
+             bm25(message_fts, 0.0, 0.0, 0.0, 1.0) AS mrank,
+             snippet(message_fts, 3, '', '', '…', 32) AS msnippet
+      FROM message_fts WHERE message_fts MATCH ?
+    `)
+      .all(ftsQuery);
+
+    // Role weighting replaces the old user_content 3.0 / assistant_content 2.0
+    // column weights: bm25 can't weight by row, so boost user-turn ranks 1.5× in JS
+    // (bm25 is more-negative-is-better; multiplying a negative rank improves it).
+    const USER_HIT_BOOST = 1.5;
+    interface MessageAgg {
+      best: number; // best (most negative) weighted rank across the session's hits
+      hits: { hit: MessageHit; rank: number }[];
+    }
+    const msgAgg = new Map<string, MessageAgg>();
+    for (const m of messageRows) {
+      const rank = m.role === 'user' ? m.mrank * USER_HIT_BOOST : m.mrank;
+      let agg = msgAgg.get(m.file_path);
+      if (!agg) {
+        agg = { best: 0, hits: [] };
+        msgAgg.set(m.file_path, agg);
+      }
+      agg.best = Math.min(agg.best, rank);
+      // Sentinel rows (msg_index -1: subagent text) rank the session but are not
+      // addressable messages, so they never become visible hits.
+      if (m.msg_index >= 0) {
+        agg.hits.push({ hit: { index: m.msg_index, role: m.role as 'user' | 'assistant', snippet: m.msnippet }, rank });
+      }
+    }
+
+    const sessionHitByPath = new Map(sessionHits.map((s) => [s.file_path, s]));
+    const candidatePaths = [...new Set([...sessionHitByPath.keys(), ...msgAgg.keys()])];
+
+    // Fetch metadata (applying the filters) for every candidate, chunked to stay
+    // well under SQLite's bound-parameter limit however many sessions match.
+    const metaByPath = new Map<string, SessionRow>();
+    const CHUNK = 400;
+    const extra = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
+    for (let i = 0; i < candidatePaths.length; i += CHUNK) {
+      const chunk = candidatePaths.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const metaRows = db
+        .query<SessionRow, any[]>(`
+        SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
+               custom_title, message_count, files_touched, files_read, commands, errored,
+               NULL as snippet
+        FROM sessions WHERE file_path IN (${placeholders}) ${extra}
+      `)
+        .all(...chunk, ...condParams);
+      for (const r of metaRows) metaByPath.set(r.file_path, r);
+    }
+
+    // finalRank = sessionRank + bestMessageRank: a missing side contributes 0, and
+    // matching both sources compounds (both are negative). The display snippet
+    // prefers the best message hit (localized — strictly better than a whole-session
+    // snippet) and falls back to the session-side snippet for metadata-only matches.
+    const merged = [...metaByPath.values()].map((meta) => {
+      const s = sessionHitByPath.get(meta.file_path);
+      const agg = msgAgg.get(meta.file_path);
+      const hits = (agg?.hits ?? [])
+        .sort((a, b) => a.rank - b.rank)
+        .slice(0, 3)
+        .map((h) => h.hit);
+      return {
+        meta,
+        hits,
+        snippet: hits[0]?.snippet ?? s?.ssnippet ?? null,
+        finalRank: (s?.srank ?? 0) + (agg?.best ?? 0),
+      };
+    });
+    merged.sort((a, b) => a.finalRank - b.finalRank || b.meta.date.localeCompare(a.meta.date));
+
+    const top = merged.slice(0, limit);
+    rows = top.map((m) => ({ ...m.meta, snippet: m.snippet }));
+    for (const m of top) hitsByPath.set(m.meta.file_path, m.hits);
   } else {
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (toolFilter) {
-      conditions.push('tool = ?');
-      params.push(toolFilter);
-    }
-    if (project) {
-      conditions.push('(cwd = ? OR cwd GLOB ?)');
-      params.push(project, globPrefix(project));
-    }
-    if (opts.errored) conditions.push('errored = 1');
-    params.push(limit);
-
+    const params: (string | number)[] = [...condParams, limit];
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    // A files filter without a query is the "what happened to this file lately"
+    // shape: newest-first by creation time, not last-activity date.
+    const orderBy = files.length > 0 ? 'created_at DESC' : 'date DESC';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
              custom_title, message_count, files_touched, files_read, commands, errored, NULL as snippet
       FROM sessions ${where}
-      ORDER BY date DESC LIMIT ?
+      ORDER BY ${orderBy} LIMIT ?
     `)
       .all(...params);
   }
@@ -519,7 +631,25 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     files: [...new Set([...parseFiles(r.files_touched), ...parseFiles(r.files_read)])],
     commands: parseFiles(r.commands),
     errored: r.errored === 1,
+    messageHits: hitsByPath.get(r.file_path) ?? [],
   }));
+}
+
+/**
+ * Resolve a session id to its indexed JSONL file path. Refreshes the index
+ * first (same as searchSessions) so recently created sessions resolve too.
+ * Collisions — the same id indexed from multiple files — pick the newest by
+ * mtime. Returns null when the id is unknown.
+ */
+export async function resolveSessionFile(sessionId: string): Promise<string | null> {
+  const db = getDb();
+  await refreshIndex();
+  const row = db
+    .query<{ file_path: string }, [string]>(
+      'SELECT file_path FROM sessions WHERE session_id = ? ORDER BY mtime DESC LIMIT 1',
+    )
+    .get(sessionId);
+  return row?.file_path ?? null;
 }
 
 interface DateRangeRow {

@@ -262,21 +262,45 @@ function extractAssistantText(d: JsonLine): string {
   return '';
 }
 
-export function getSessionMessages(lines: string[]): SessionMessage[] {
-  const messages: SessionMessage[] = [];
+export interface ExtractedMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  /** Sequential over ALL non-empty messages — identical to getSessionMessages numbering. */
+  index: number;
+  /** user turns: isGenuineUserTurn; assistant turns: always true. */
+  genuine: boolean;
+}
+
+/**
+ * The single numbering authority for message extraction. Every non-empty
+ * user/assistant message in order, with a sequential index and a `genuine` flag
+ * for user turns (injected skill bodies and tool results still consume an index —
+ * they are counted, just flagged — so genuineness is metadata, never numbering).
+ * Search-hit indices (message_fts) and get_session_messages pagination must agree
+ * exactly, so both derive from this function.
+ */
+export function extractMessages(lines: string[]): ExtractedMessage[] {
+  const messages: ExtractedMessage[] = [];
   let idx = 0;
   for (const line of lines) {
     const d = tryParseJson(line);
     if (!d) continue;
     if (isUserMessage(d)) {
       const text = extractUserText(d);
-      if (text.trim()) messages.push({ role: 'user', text, index: idx++ });
+      if (text.trim()) {
+        messages.push({ role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()) });
+      }
     } else {
       const text = extractAssistantText(d);
-      if (text.trim()) messages.push({ role: 'assistant', text, index: idx++ });
+      if (text.trim()) messages.push({ role: 'assistant', text, index: idx++, genuine: true });
     }
   }
   return messages;
+}
+
+/** Thin projection of extractMessages — same messages, same numbering, no genuine flag. */
+export function getSessionMessages(lines: string[]): SessionMessage[] {
+  return extractMessages(lines).map(({ role, text, index }) => ({ role, text, index }));
 }
 
 /** Max length of each stored closing message (bounds the indexed columns). */
@@ -287,7 +311,7 @@ export const CLOSING_MAX = 500;
  * keeping the body text, then collapse the blank runs they leave behind. This is
  * markup cleanup, not outcome detection — the body (often the useful part) stays.
  */
-function stripInsightFences(text: string): string {
+export function stripInsightFences(text: string): string {
   // Match only the literal output-style markup: a `★ Insight` marker line and
   // box-drawing `─` fence lines. Requiring the star and the `─` char (not ASCII
   // `-`) avoids eating a genuine markdown `-----` rule or a bare "Insight" line.

@@ -1,5 +1,13 @@
 export type Tool = 'claude' | 'pi' | 'codex';
 
+/** A search match localized to one message inside a session. */
+export interface MessageHit {
+  /** Message index within the session — feeds get_session_messages(offset) directly. */
+  index: number;
+  role: 'user' | 'assistant';
+  snippet: string;
+}
+
 export interface SessionResult {
   date: string;
   createdAt: string;
@@ -14,6 +22,9 @@ export interface SessionResult {
   files: string[];
   commands: string[];
   errored: boolean;
+  /** Top message-level matches (≤3, best first). Empty for metadata-only matches;
+   *  absent from the no-index scanner fallback, which cannot localize hits. */
+  messageHits?: MessageHit[];
 }
 
 export interface DigestSessionDetail {
@@ -65,6 +76,8 @@ export interface CliArgs {
   searchQuery: string;
   scopeHere: boolean;
   errored: boolean;
+  /** --file values (repeatable): substring path filters, AND-composed. */
+  files: string[];
 }
 
 export interface ContextSession {

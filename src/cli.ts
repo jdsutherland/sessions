@@ -20,6 +20,9 @@ ${C.bold}Options:${C.reset}
   --here           Scope to current git repo (default: all projects)
   --tool <name>    Filter: claude, codex, pi
   --errored        Only sessions that hit an error
+  --file <path>    Only sessions that touched or read this path (substring
+                   match; repeatable — every path must match). Newest first
+                   when no query is given
   --mcp            Start as an MCP server (stdio transport)
   --clear-cache    Remove the search index (rebuilds on next use)
   -h, --help       Show this help
@@ -28,6 +31,9 @@ ${C.bold}Commands:${C.reset}
   context          Print a context primer for the current repo (markdown)
                    --full widens detail; --limit/--days/--tool filter; --worktree
                    narrows to the current worktree; --out <path> writes to a file
+  digest <session> Print the arc of one session as compact markdown (~8k chars):
+                   each genuine user turn with its exchange's final assistant
+                   reply. Accepts a JSONL file path or an indexed session id
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the
@@ -52,7 +58,7 @@ function die(msg: string): never {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false };
+  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false, files: [] };
 
   let i = 0;
   while (i < argv.length) {
@@ -73,6 +79,11 @@ export function parseArgs(argv: string[]): CliArgs {
         break;
       case '--errored':
         args.errored = true;
+        break;
+      case '--file':
+        i++;
+        if (!argv[i]) die(`--file requires a path`);
+        args.files.push(argv[i]!);
         break;
       case '--no-color':
         disableColors();
@@ -101,6 +112,6 @@ export function getRepoRoot(scopeHere: boolean): string {
 export function toSearchOptions(args: CliArgs, repoRoot: string): { query: string; opts: SearchOptions } {
   return {
     query: args.searchQuery,
-    opts: { tool: args.toolFilter, project: repoRoot, errored: args.errored, limit: 1000 },
+    opts: { tool: args.toolFilter, project: repoRoot, errored: args.errored, files: args.files, limit: 1000 },
   };
 }
