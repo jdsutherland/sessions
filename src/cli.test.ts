@@ -18,3 +18,10 @@ test('toSearchOptions: maps CLI args + repoRoot to a SearchOptions call', () => 
   expect(opts.tool).toBe('');
   expect(opts.limit).toBeGreaterThan(0);
 });
+
+test('parseArgs: --file is repeatable and maps through toSearchOptions', () => {
+  const a = parseArgs(['--file', 'src/auth.ts', '--file', 'docs/plan.md']);
+  expect(a.files).toEqual(['src/auth.ts', 'docs/plan.md']);
+  const { opts } = toSearchOptions(a, '');
+  expect(opts.files).toEqual(['src/auth.ts', 'docs/plan.md']);
+});

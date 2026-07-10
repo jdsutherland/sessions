@@ -20,12 +20,14 @@ export async function runSearchSessions(args: {
   tool?: Tool;
   project?: string;
   errored?: boolean;
+  files?: string[];
   limit?: number;
 }): Promise<{ content: { type: 'text'; text: string }[] }> {
   const results = await searchSessions(args.query ?? '', {
     tool: args.tool ?? '',
     project: args.project ?? '',
     errored: args.errored,
+    files: args.files,
     limit: args.limit ?? 20,
   });
 
@@ -39,7 +41,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  "Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit's index as the offset to get_session_messages to jump straight to the matched exchange.",
+  "Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit's index as the offset to get_session_messages to jump straight to the matched exchange. To answer \"which sessions touched this file?\", pass files (with no query) — results come back newest-first.",
   {
     query: z
       .string()
@@ -50,9 +52,16 @@ server.tool(
     tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
     errored: z.boolean().optional().describe('Only return sessions that hit an error'),
+    files: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Filter to sessions that touched or read these paths — pass a path suffix or full path (matching is substring; longer paths are more precise). Multiple paths must all match. With no query, results are newest-first.',
+      ),
     limit: z.number().optional().default(20).describe('Max results to return (default 20)'),
   },
-  async ({ query, tool, project, errored, limit }) => runSearchSessions({ query, tool, project, errored, limit }),
+  async ({ query, tool, project, errored, files, limit }) =>
+    runSearchSessions({ query, tool, project, errored, files, limit }),
 );
 
 // Exported, testable seam like runSearchSessions: the get_session_messages tool

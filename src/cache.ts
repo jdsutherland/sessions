@@ -420,6 +420,9 @@ export interface SearchOptions {
   tool?: Tool | '';
   project?: string;
   errored?: boolean;
+  /** Substring match against files_touched OR files_read; multiple values AND-compose.
+   *  Empty array = absent. With no query, filtered results order newest-first (created_at). */
+  files?: string[];
   limit?: number;
 }
 
@@ -478,6 +481,16 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     condParams.push(project, globPrefix(project));
   }
   if (opts.errored) conditions.push('errored = 1');
+  // Files filter: substring match over the JSON-array text columns — callers pass a
+  // path suffix or full path. Deliberately imprecise (a short fragment can match an
+  // unrelated longer path); precision comes from passing longer suffixes. LIKE
+  // metacharacters are escaped so paths with `_` (common) match literally.
+  const files = (opts.files ?? []).filter((f) => f.length > 0); // blank entries = absent, like an empty array
+  for (const f of files) {
+    conditions.push("(files_touched LIKE '%' || ? || '%' ESCAPE '\\' OR files_read LIKE '%' || ? || '%' ESCAPE '\\')");
+    const escaped = f.replace(/[\\%_]/g, (c) => `\\${c}`);
+    condParams.push(escaped, escaped);
+  }
 
   if (ftsQuery) {
     // Session-level results merge two hit sources: the slimmed session_fts (metadata
@@ -589,12 +602,15 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   } else {
     const params: (string | number)[] = [...condParams, limit];
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    // A files filter without a query is the "what happened to this file lately"
+    // shape: newest-first by creation time, not last-activity date.
+    const orderBy = files.length > 0 ? 'created_at DESC' : 'date DESC';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
              custom_title, message_count, files_touched, files_read, commands, errored, NULL as snippet
       FROM sessions ${where}
-      ORDER BY date DESC LIMIT ?
+      ORDER BY ${orderBy} LIMIT ?
     `)
       .all(...params);
   }

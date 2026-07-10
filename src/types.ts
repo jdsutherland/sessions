@@ -76,6 +76,8 @@ export interface CliArgs {
   searchQuery: string;
   scopeHere: boolean;
   errored: boolean;
+  /** --file values (repeatable): substring path filters, AND-composed. */
+  files: string[];
 }
 
 export interface ContextSession {

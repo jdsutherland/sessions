@@ -108,6 +108,67 @@ beforeAll(async () => {
     },
   ]);
 
+  // Sessions D/E/F: files-filter fixtures (phase 3). D edits src/auth.ts and a path
+  // with a literal underscore; E only Reads auth.ts (files_read, not files_touched)
+  // plus a decoy path that a wildcard `_` would match; F mentions the shared query
+  // term but touches no files. E is created after D so newest-first is observable.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'd', '/repoD', [
+    {
+      type: 'user',
+      timestamp: '2026-06-04T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zanzibar payment refactor' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T10:01:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repoD/src/auth.ts' } }],
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-04T10:02:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repoD/src/my_file.ts' } }],
+      },
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'e', '/repoE', [
+    {
+      type: 'user',
+      timestamp: '2026-06-05T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zanzibar exploration notes' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-05T10:01:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/repoE/src/auth.ts' } }],
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-05T10:02:00Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/repoE/src/myXfile.ts' } }],
+      },
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'f', '/repoF', [
+    {
+      type: 'user',
+      timestamp: '2026-06-06T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zanzibar unrelated chatter' }] },
+      promptSource: 'typed',
+    },
+  ]);
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -231,6 +292,47 @@ test('pruning: deleting the file empties both FTS tables for it', async () => {
   }
   const r = await cache.searchSessions('grobblewick', {});
   expect(r.map((x) => x.sessionId)).not.toContain('c');
+});
+
+// ——— files filter (phase 3) tests — additive; do not modify cases above ———
+
+test('files filter: matches touched (d) and read (e) paths, newest-first, others absent', async () => {
+  const r = await cache.searchSessions('', { files: ['src/auth.ts'] });
+  // E only Read the path (files_read), D edited it (files_touched); E is newer → first.
+  expect(r.map((x) => x.sessionId)).toEqual(['e', 'd']);
+});
+
+test('files filter: multiple values AND-compose', async () => {
+  const r = await cache.searchSessions('', { files: ['auth.ts', 'my_file.ts'] });
+  expect(r.map((x) => x.sessionId)).toEqual(['d']); // E matches auth.ts but not my_file.ts
+});
+
+test('files filter + query: only sessions satisfying both', async () => {
+  const all = await cache.searchSessions('zanzibar', {});
+  expect(all.map((x) => x.sessionId)).toContain('f'); // query alone reaches F…
+  const r = await cache.searchSessions('zanzibar', { files: ['src/auth.ts'] });
+  const ids = r.map((x) => x.sessionId);
+  expect(ids.sort()).toEqual(['d', 'e']); // …but the filter narrows F out
+  const one = await cache.searchSessions('zanzibar', { files: ['my_file.ts'] });
+  expect(one.map((x) => x.sessionId)).toEqual(['d']);
+});
+
+test('files filter: LIKE metacharacters match literally (underscore is not a wildcard)', async () => {
+  const r = await cache.searchSessions('', { files: ['my_file.ts'] });
+  expect(r.map((x) => x.sessionId)).toEqual(['d']); // must NOT match E's myXfile.ts
+});
+
+test('files filter: empty array is treated as absent', async () => {
+  const filtered = await cache.searchSessions('', { files: [] });
+  const unfiltered = await cache.searchSessions('', {});
+  expect(filtered.map((x) => x.sessionId)).toEqual(unfiltered.map((x) => x.sessionId));
+});
+
+test('files filter: a short fragment matches multiple distinct paths (documented false positive)', async () => {
+  // 'file.ts' is a substring of both '/repoD/src/my_file.ts' and '/repoE/src/myXfile.ts' —
+  // substring matching trades precision for zero normalization; pass longer suffixes to narrow.
+  const r = await cache.searchSessions('', { files: ['file.ts'] });
+  expect(r.map((x) => x.sessionId)).toEqual(['e', 'd']);
 });
 
 test('hardening: busy_timeout is set and a corrupt DB rebuilds instead of throwing', async () => {
