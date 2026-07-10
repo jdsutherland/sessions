@@ -41,7 +41,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  "Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit's index as the offset to get_session_messages to jump straight to the matched exchange. To answer \"which sessions touched this file?\", pass files (with no query) — results come back newest-first.",
+  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
   {
     query: z
       .string()
