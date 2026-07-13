@@ -416,6 +416,14 @@ export async function refreshIndex(): Promise<{ total: number; updated: number }
   return { total: files.length, updated };
 }
 
+// Read-only index access for stats consumers (`sessions wrapped`). Refreshes
+// first so queries see current transcripts, then hands back the shared handle.
+// Callers must treat the connection as read-only — all writes stay in this file.
+export async function getIndexDb(): Promise<Database> {
+  await refreshIndex();
+  return getDb();
+}
+
 export interface SearchOptions {
   tool?: Tool | '';
   project?: string;

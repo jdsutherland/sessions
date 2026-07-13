@@ -14,7 +14,12 @@ if (Bun.argv.includes('--clear-cache')) {
   process.exit(0);
 }
 
-if (Bun.argv.includes('cleanup')) {
+// Commands dispatch on the positional word only. Matching anywhere in argv
+// (the old behavior) let a flag VALUE fire a command — `sessions wrapped
+// --out cleanup` would have uninstalled the plugin and wiped the index.
+const command = Bun.argv[2];
+
+if (command === 'cleanup') {
   const { clearCache } = await import('./src/cache');
   const { runUninstall } = await import('./src/setup');
   runUninstall();
@@ -28,22 +33,21 @@ if (Bun.argv.includes('--mcp')) {
   await new Promise(() => {});
 }
 
-if (Bun.argv.includes('setup')) {
+if (command === 'setup') {
   const { runSetup } = await import('./src/setup');
   runSetup({ hooks: Bun.argv.includes('--hooks') });
   process.exit(0);
 }
 
-if (Bun.argv.includes('uninstall')) {
+if (command === 'uninstall') {
   const { runUninstall } = await import('./src/setup');
   runUninstall();
   process.exit(0);
 }
 
-if (Bun.argv.includes('report')) {
+if (command === 'report') {
   const { parseReportArgs, runReport } = await import('./src/report/index.ts');
-  const idx = Bun.argv.indexOf('report');
-  const opts = parseReportArgs(Bun.argv.slice(idx + 1));
+  const opts = parseReportArgs(Bun.argv.slice(3));
   const res = await runReport(opts);
   if (!opts.stdout) {
     if (res.jsonPath) process.stderr.write(`wrote ${res.jsonPath}\n`);
@@ -56,17 +60,27 @@ if (Bun.argv.includes('report')) {
   process.exit(0);
 }
 
-if (Bun.argv.includes('context')) {
-  const i = Bun.argv.indexOf('context');
-  const { parseContextArgs, runContext } = await import('./src/context.ts');
-  await runContext(parseContextArgs(Bun.argv.slice(i + 1)));
+if (command === 'wrapped') {
+  const { parseWrappedArgs, runWrapped } = await import('./src/wrapped/index.ts');
+  const opts = parseWrappedArgs(Bun.argv.slice(3));
+  const res = await runWrapped(opts);
+  if (res.htmlPath) process.stderr.write(`wrote ${res.htmlPath}\n`);
+  if (res.htmlPath && !opts.out && !opts.stdout) {
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    Bun.spawnSync([opener, res.htmlPath]);
+  }
   process.exit(0);
 }
 
-if (Bun.argv.includes('digest')) {
-  const i = Bun.argv.indexOf('digest');
+if (command === 'context') {
+  const { parseContextArgs, runContext } = await import('./src/context.ts');
+  await runContext(parseContextArgs(Bun.argv.slice(3)));
+  process.exit(0);
+}
+
+if (command === 'digest') {
   const { parseDigestArgs, runDigest } = await import('./src/digest.ts');
-  await runDigest(parseDigestArgs(Bun.argv.slice(i + 1)));
+  await runDigest(parseDigestArgs(Bun.argv.slice(3)));
   process.exit(0);
 }
 

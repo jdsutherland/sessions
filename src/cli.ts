@@ -38,6 +38,9 @@ ${C.bold}Commands:${C.reset}
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the
                    current project; --from/--to/--days/--month limit the period
+  wrapped          Your year with AI agents, Spotify-Wrapped style (opens in
+                   browser). --year <YYYY> wraps a past year; --out/--stdout,
+                   --tool, --extras <json> add agent-authored slides
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY
