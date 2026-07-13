@@ -17,6 +17,8 @@ import { computeEventStats, longestStreakRange } from './compute.ts';
 import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
+import { coerceExtras } from './extras.ts';
+import { runRoast, type RoastRunner, type RoastToolId } from './roast.ts';
 import type { WrappedData, WrappedExtra } from './types.ts';
 
 export interface WrappedOptions {
@@ -28,12 +30,20 @@ export interface WrappedOptions {
   offline?: boolean;
   refreshPricing?: boolean;
   extras?: string;
+  /** Ask an installed agent CLI to write bespoke roast slides from the stats. */
+  roast?: boolean;
+  /** Force a specific roast CLI instead of autodetecting. */
+  roastWith?: RoastToolId;
   /** Test injection, same convention as report. */
   roots?: ReportRoots;
   now?: string;
   /** Skip the index-backed content pass (tests without an index). */
   noContent?: boolean;
+  /** Test injection: stub the roast CLI instead of spawning one. */
+  roastRunner?: RoastRunner;
 }
+
+const ROAST_TOOLS: Record<string, RoastToolId> = { claude: 'claude', codex: 'codex', pi: 'pi' };
 
 export interface WrappedResult {
   htmlPath?: string;
@@ -65,6 +75,10 @@ Options:
   --tool <name>    Only one tool: claude, codex, or pi
   --tz <zone>      Timezone for day/hour bucketing (default: TIMEZONE env or America/Chicago)
   --extras <path>  JSON file of extra slides: [{"headline": "...", "title"?, "subline"?, "footnote"?}]
+  --roast          Let an installed agent CLI (claude/codex/pi) improvise a few
+                   roast slides from your stats — opt-in, needs no setup, and the
+                   page still renders if it fails. Stats only; nothing else is sent.
+  --roast-with <tool>  Force the roast CLI: claude, codex, or pi
   --out <path>     Write HTML here instead of a temp file (implies no auto-open)
   --stdout         Print wrapped data as JSON to stdout
   --offline        Skip the pricing refresh (use cached/embedded rates)
@@ -118,6 +132,17 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--extras':
         opts.extras = argv[++i];
         break;
+      case '--roast':
+        opts.roast = true;
+        break;
+      case '--roast-with': {
+        const v = argv[++i] ?? '';
+        const mapped = ROAST_TOOLS[v];
+        if (!mapped) die('--roast-with must be claude|codex|pi');
+        opts.roast = true;
+        opts.roastWith = mapped;
+        break;
+      }
       default:
         die(`unknown option: ${a}`);
     }
@@ -136,26 +161,7 @@ export function parseExtras(raw: string): WrappedExtra[] {
     die('--extras file is not valid JSON');
   }
   if (!Array.isArray(parsed)) die('--extras must be a JSON array of slides');
-  // Cap by code points, not UTF-16 units — String.slice can split a surrogate
-  // pair and leave a lone half that renders as U+FFFD on the slide.
-  const cap = (s: unknown, n: number): string | undefined => {
-    if (typeof s !== 'string' || s.trim().length === 0) return undefined;
-    return [...s.trim()].slice(0, n).join('');
-  };
-  const out: WrappedExtra[] = [];
-  for (const item of parsed.slice(0, 6)) {
-    if (typeof item !== 'object' || item === null) continue;
-    const o = item as Record<string, unknown>;
-    const headline = cap(o['headline'], 120);
-    if (!headline) continue;
-    out.push({
-      headline,
-      title: cap(o['title'], 60),
-      subline: cap(o['subline'], 200),
-      footnote: cap(o['footnote'], 160),
-    });
-  }
-  return out;
+  return coerceExtras(parsed);
 }
 
 export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
@@ -334,6 +340,14 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     persona,
     extras,
   };
+
+  // The roast runs last: it needs the finished stats to riff on, and it appends
+  // to whatever --extras already supplied (capped at 6 total). Fail-open — a
+  // missing/failed CLI just leaves the deterministic page untouched.
+  if (opts.roast) {
+    const roasted = await runRoast(data, { preferred: opts.roastWith, runner: opts.roastRunner });
+    if (roasted.length > 0) data.extras = [...data.extras, ...roasted].slice(0, 6);
+  }
 
   const json = JSON.stringify(data, null, 2);
   const result: WrappedResult = { json };

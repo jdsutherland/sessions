@@ -60,6 +60,23 @@ describe('parseWrappedArgs', () => {
     expect(o.offline).toBe(true);
   });
 
+  test('parses --roast and --roast-with', () => {
+    expect(parseWrappedArgs(['--roast']).roast).toBe(true);
+    const o = parseWrappedArgs(['--roast-with', 'codex']);
+    expect(o.roast).toBe(true);
+    expect(o.roastWith).toBe('codex');
+  });
+
+  test('rejects a bad --roast-with tool', () => {
+    const r = Bun.spawnSync([
+      'bun',
+      '-e',
+      "require('./src/wrapped/index.ts').parseWrappedArgs(['--roast-with','gemini'])",
+    ]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain('--roast-with');
+  });
+
   test('rejects a bad year in a child process', () => {
     const r = Bun.spawnSync(['bun', '-e', "require('./src/wrapped/index.ts').parseWrappedArgs(['--year','20'])"]);
     expect(r.exitCode).toBe(1);
@@ -212,6 +229,44 @@ describe('runWrapped', () => {
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain('--extras: cannot read');
+  });
+
+  test('--roast appends model-authored slides via the injected runner', async () => {
+    const out = join(tmp, 'roasted.html');
+    await runWrapped({
+      tz: 'UTC',
+      stdout: false,
+      offline: true,
+      roots,
+      now: NOW,
+      out,
+      roast: true,
+      roastWith: 'claude',
+      noContent: true,
+      roastRunner: async () => '[{"title":"the verdict","headline":"3 whole sessions. a titan of industry."}]',
+    });
+    const html = readFileSync(out, 'utf8');
+    expect(html).toContain('a titan of industry');
+    expect(html).toContain('improvised by Claude from your stats');
+  });
+
+  test('a failed roast leaves the page intact', async () => {
+    const out = join(tmp, 'roast-fail.html');
+    await runWrapped({
+      tz: 'UTC',
+      stdout: false,
+      offline: true,
+      roots,
+      now: NOW,
+      out,
+      roast: true,
+      roastWith: 'claude',
+      noContent: true,
+      roastRunner: async () => 'the model said no',
+    });
+    const html = readFileSync(out, 'utf8');
+    expect(html).toContain('id="credits"'); // page still renders end to end
+    expect(html).not.toContain('improvised by');
   });
 
   test('extras are injected as cards', async () => {

@@ -49,6 +49,6 @@ Content-stat period semantics: **sessions started within the calendar year** (`c
 
 - **Retention**: transcripts prune (~6 months survive); a December run won't cover January. Option: persist monthly aggregate snapshots. For now the page discloses its horizon.
 - **Share export**: no canvas/9:16 export in v1 — the persona card invites a screenshot instead.
-- **`/wrapped` plugin skill**: could have an agent mine the index via MCP and drive `--extras` automatically. The CLI hook exists.
+- **Roast mode (shipped)**: `--roast` sends the stats-only digest to an installed agent CLI (`claude`→`codex`→`pi`, or `--roast-with`), validates the returned slides through the shared `coerceExtras`, and stamps provenance. Opt-in, fails open, rides the user's own auth. Chosen over a `/wrapped` plugin skill (tool-specific, needs install/update) because wrapped's users definitionally have an agent CLI installed. Deeper snippet-level roasting (feeding the model actual message excerpts) deferred — stats-only avoids the latency/cost/hallucination jump and the privacy surface.
 - **Tool-call league table** (Bash vs Edit vs Read counts): needs a full JSONL re-parse; the `commands` column proxy was judged enough for v1.
 - Per-tool data asymmetry (Pi: no files/commands; Codex: no files_read, cacheWrite always 0) is footnoted, not normalized.
