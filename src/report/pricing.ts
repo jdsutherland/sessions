@@ -287,10 +287,19 @@ function tiered(tokens: number, base: number, above?: number): number {
 // ---------------------------------------------------------------------------
 let warnings: PricingWarning[] = [];
 
+// computeCost pushes one entry per unpriced EVENT; consumers want one line per
+// model. Merge here (summing tokens, first-seen order) so stderr never reads
+// "67 model(s) had no pricing" followed by the same two ids 67 times.
 export function drainPricingWarnings(): PricingWarning[] {
-  const out = warnings;
+  const raw = warnings;
   warnings = [];
-  return out;
+  const byModel = new Map<string, PricingWarning>();
+  for (const w of raw) {
+    const cur = byModel.get(w.model);
+    if (cur) cur.tokens += w.tokens;
+    else byModel.set(w.model, { ...w });
+  }
+  return [...byModel.values()];
 }
 
 export function resetPricingWarnings(): void {

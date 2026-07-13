@@ -273,6 +273,21 @@ The JSON is a sessions-owned `UsageReport` (`{ "generator": "sessions", "version
 
 Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs. Tokens for unknown models are still counted, with cost shown as `$0`. Token totals exclude cache reads (replayed context, mostly free reuse).
 
+## Wrapped
+
+`sessions wrapped` turns your year of AI pairing into a Spotify-Wrapped-style scroll-through story and opens it in your browser: tokens with a human-scale equivalence, the API-rate receipt, streaks, a rhythm heatmap, top projects and models, your most significant session — and a set of fun stats mined from what you and your agents actually said to each other (the interrupt census, the two-sided apology scoreboard, how many times Claude told you "you're absolutely right", your word of the year). It ends with a coding-personality reveal built from three behavioral axes, with the evidence printed on the card.
+
+```sh
+sessions wrapped                     # this year, opens in your browser
+sessions wrapped --year 2025         # a past calendar year
+sessions wrapped --stdout            # the underlying JSON, for piping
+sessions wrapped --extras roast.json # inject extra agent-authored slides
+```
+
+The fun slides are **dynamically selected**: every candidate stat is scored for how notable it is in _your_ data, and only the top ones render — a daylight coder never sees a 3 AM slide. Everything is computed locally (event logs + the search index); nothing leaves your machine. Because AI tools prune old transcripts, the page discloses when its data starts if that's later than January 1. Token and cost math match `sessions report` exactly.
+
+`--extras <path>` accepts a JSON array of up to six slides (`[{"headline": "...", "title"?, "subline"?, "footnote"?}]`) — the hook for having an agent mine your history for bespoke slides and inject them into the story.
+
 ## How it works
 
 ### Session discovery
