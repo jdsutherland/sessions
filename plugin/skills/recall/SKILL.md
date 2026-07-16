@@ -1,10 +1,15 @@
 ---
 name: recall
 description: >-
-  Recall what was done on a specific project or topic. Use when the user says
-  "what did I do on [project]", "recall [topic]", "history of [project]",
-  "when did I last work on [thing]", or wants to remember past work on a
-  specific codebase or feature.
+  Recall what was done on a specific project or topic from past AI coding
+  sessions. Use when the user says "what did I do on [project]", "recall
+  [topic]", "history of [project]", "when did I last work on [thing]" — but
+  also when they reference prior work without asking for history explicitly:
+  "didn't we already fix this", "what was that approach we tried", "why did
+  we do it this way", "what happened to [file/feature]". Use PROACTIVELY
+  before re-deriving a decision or re-solving a problem a past session
+  likely settled — past conversations hold rationale and dead ends that
+  never made it into git.
 argument-hint: project name or path
 ---
 
