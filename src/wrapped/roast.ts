@@ -52,6 +52,12 @@ function roastDigest(d: WrappedData): Record<string, unknown> {
     nightsPastMidnight: d.rhythm.nightsPastMidnight,
     topProjects: d.projects.map((p) => ({ name: p.name, sharePct: Math.round(p.share * 100) })),
     topModels: d.models.map((m) => m.label),
+    modelsTried: d.modelsTried,
+    biggestDayTokens: d.biggestDay?.tokens ?? null,
+    longestSittingMinutes: d.longestSession ? Math.round(d.longestSession.durationMs / 60_000) : null,
+    longestGapDays: d.longestGap?.days ?? null,
+    longestUserMessageChars: d.content?.monologue?.longestUser ?? null,
+    cacheHitPct: d.cacheHitRate !== null ? Math.round(d.cacheHitRate * 100) : null,
     persona: d.persona ? { name: d.persona.name, axes: d.persona.axes.map((a) => `${a.label}: ${a.lean}`) } : null,
     wordOfYear: d.wordOfYear ? { word: d.wordOfYear.word, count: d.wordOfYear.count } : null,
     phraseCounts: Object.fromEntries((d.content?.phrases ?? []).map((p) => [p.id, p.count])),
@@ -66,10 +72,12 @@ export function buildRoastPrompt(d: WrappedData): string {
   const digest = JSON.stringify(roastDigest(d), null, 2);
   return `You are the closer at a roast battle, and the target is someone's year of using AI coding agents. Below are their stats (numbers only — no message content).
 
-Write 2-4 short, EDGY roast slides. Be genuinely cutting — sharp, dark, deadpan, a little mean. Land real punches at the absurdity in their numbers; twist the knife. Dry wit and savage one-liners over gentle ribbing. Mild profanity is fine if it lands. The one rule: roast their WORK and these HABITS (the numbers), never protected traits or anything hateful — this is affectionate underneath, like a friend who knows exactly where it hurts. Reference specific figures. No emoji.
+Write 3-5 short, EDGY roast slides. Be genuinely cutting — sharp, dark, deadpan, a little mean. Land real punches at the absurdity in their numbers; twist the knife. Dry wit and savage one-liners over gentle ribbing. Mild profanity is fine if it lands. The one rule: roast their WORK and these HABITS (the numbers), never protected traits or anything hateful — this is affectionate underneath, like a friend who knows exactly where it hurts. Reference specific figures. No emoji.
+
+Each headline renders as full-screen display type, so brevity IS the punch: a headline over 80 characters gets shrunk to fit and lands soft. Setup-then-twist? Setup in the headline, twist in the subline.
 
 Output ONLY a JSON array, no prose around it, matching exactly this schema:
-[{"title": "short kicker, <=6 words", "headline": "the punchline, <=110 chars", "subline": "optional extra line, <=180 chars"}]
+[{"title": "short kicker, <=4 words", "headline": "the punchline, <=80 chars", "subline": "optional second beat, <=160 chars"}]
 
 Their stats:
 ${digest}`;

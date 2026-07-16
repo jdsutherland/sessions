@@ -12,7 +12,7 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 const fmtInt = (n: number): string => n.toLocaleString('en-US');
 
 interface Candidate {
-  theme: 'friction' | 'relationship' | 'bloopers';
+  theme: 'friction' | 'relationship' | 'lies' | 'bloopers';
   score: number;
   stat: FunStat;
 }
@@ -79,6 +79,18 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       },
     });
   }
+  const stillBroken = phrase(p, 'stillBroken');
+  if (stillBroken >= 3) {
+    out.push({
+      theme: 'friction',
+      score: 0.2 + 0.65 * sat(stillBroken, 60),
+      stat: {
+        big: fmtInt(stillBroken),
+        label: '“still broken” status reports filed',
+        sub: 'same error, new hope',
+      },
+    });
+  }
 
   // — relationship —
   // Base score is deliberately high: this is the pre-validated crowd-pleaser
@@ -138,6 +150,80 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       },
     });
   }
+  const areYouSure = phrase(p, 'areYouSure');
+  if (areYouSure >= 3) {
+    out.push({
+      theme: 'relationship',
+      score: 0.3 + 0.5 * sat(areYouSure, 25),
+      stat: {
+        big: fmtInt(areYouSure),
+        label: 'times you asked “are you sure?”',
+        sub: 'trust, but verify',
+      },
+    });
+  }
+  const hallucinate = phrase(p, 'hallucinate');
+  if (hallucinate >= 2) {
+    out.push({
+      theme: 'relationship',
+      score: 0.4 + 0.45 * sat(hallucinate, 12),
+      stat: {
+        big: fmtInt(hallucinate),
+        label: 'times you used the H-word — “hallucinate”',
+        sub: 'it prefers the term “creative recall”',
+      },
+    });
+  }
+  const perfect = phrase(p, 'perfectExclaim');
+  if (perfect >= 10) {
+    out.push({
+      theme: 'relationship',
+      score: 0.2 + 0.5 * sat(perfect, 150),
+      stat: {
+        big: fmtInt(perfect),
+        label: 'times Claude declared “Perfect!”',
+        sub: 'grade pending independent verification',
+      },
+    });
+  }
+
+  // — lies (famous last words) —
+  const quickQuestion = phrase(p, 'quickQuestion');
+  if (quickQuestion >= 3) {
+    out.push({
+      theme: 'lies',
+      score: 0.25 + 0.6 * sat(quickQuestion, 40),
+      stat: {
+        big: fmtInt(quickQuestion),
+        label: 'prompts promised it would be quick',
+        sub: 'narrator: it was not quick',
+      },
+    });
+  }
+  const shouldWork = phrase(p, 'shouldWork');
+  if (shouldWork >= 5) {
+    out.push({
+      theme: 'lies',
+      score: 0.2 + 0.6 * sat(shouldWork, 40),
+      stat: {
+        big: fmtInt(shouldWork),
+        label: 'messages contained “should work”',
+        sub: 'the four most cursed words in software',
+      },
+    });
+  }
+  const oneMore = phrase(p, 'oneMoreThing');
+  if (oneMore >= 3) {
+    out.push({
+      theme: 'lies',
+      score: 0.2 + 0.55 * sat(oneMore, 40),
+      stat: {
+        big: fmtInt(oneMore),
+        label: 'rounds of “one more thing”',
+        sub: 'there is always one more thing',
+      },
+    });
+  }
 
   // — bloopers —
   if (rhythm.nightsPastMidnight >= 5 && rhythm.latestNight) {
@@ -181,6 +267,39 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: { big: fmtInt(ultrathink), label: 'invocations of "ultrathink"', sub: 'it thought ultra hard' },
     });
   }
+  if (content?.monologue && content.monologue.longestUser >= 2000) {
+    out.push({
+      theme: 'bloopers',
+      score: 0.2 + 0.5 * sat(content.monologue.longestUser, 12_000),
+      stat: {
+        big: fmtInt(content.monologue.longestUser),
+        label: 'characters in your longest single message',
+        sub: 'that’s not a prompt, that’s a manifesto (pastes count)',
+      },
+    });
+  }
+  // Weekend share straight off the heatmap — column 0 is Sunday, 6 is Saturday.
+  let weekendMsgs = 0;
+  let totalMsgs = 0;
+  for (let wd = 0; wd < 7; wd++) {
+    for (let h = 0; h < 24; h++) {
+      const v = rhythm.heat[wd]?.[h] ?? 0;
+      totalMsgs += v;
+      if (wd === 0 || wd === 6) weekendMsgs += v;
+    }
+  }
+  const weekendShare = totalMsgs > 0 ? weekendMsgs / totalMsgs : 0;
+  if (totalMsgs >= 200 && weekendShare >= 0.2) {
+    out.push({
+      theme: 'bloopers',
+      score: 0.15 + weekendShare,
+      stat: {
+        big: `${Math.round(weekendShare * 100)}%`,
+        label: 'of your messages were sent on a weekend',
+        sub: 'the repo doesn’t know what a Saturday is',
+      },
+    });
+  }
 
   return out;
 }
@@ -188,6 +307,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
 const THEME_META: Record<Candidate['theme'], { kicker: string; title: string }> = {
   friction: { kicker: 'the friction reel', title: 'It wasn’t always pretty.' },
   relationship: { kicker: 'the relationship', title: 'You two have a dynamic.' },
+  lies: { kicker: 'famous last words', title: 'The lies you told yourself.' },
   bloopers: { kicker: 'the bloopers', title: 'And then there’s… this.' },
 };
 
@@ -195,6 +315,7 @@ const FOOTNOTES: Record<Candidate['theme'], string> = {
   friction:
     'errors include any failed command or grep — friction, not disasters · cursed day by session start date (UTC)',
   relationship: 'counted from your local transcripts — messages containing each phrase',
+  lies: 'counted from your own prompts — messages containing each phrase, in any context',
   bloopers: 'local timestamps, your timezone',
 };
 
@@ -203,7 +324,7 @@ const FOOTNOTES: Record<Candidate['theme'], string> = {
 export function selectFunCards(content: WrappedContentStats | null, rhythm: WrappedRhythm): FunCard[] {
   const candidates = buildCandidates(content, rhythm);
   const cards: FunCard[] = [];
-  for (const theme of ['friction', 'relationship', 'bloopers'] as const) {
+  for (const theme of ['friction', 'relationship', 'lies', 'bloopers'] as const) {
     const pool = candidates
       .filter((c) => c.theme === theme && c.score >= 0.3)
       .sort((a, b) => b.score - a.score)

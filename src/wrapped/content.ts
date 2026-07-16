@@ -36,6 +36,17 @@ const PHRASES: PhraseSpec[] = [
   { id: 'userSorry', role: 'user', patterns: ['%sorry%', '%apolog%'] },
   { id: 'assistantApology', role: 'assistant', patterns: ['%apolog%'] },
   { id: 'ultrathink', role: 'user', patterns: ['%ultrathink%'] },
+  { id: 'quickQuestion', role: 'user', patterns: ['%quick question%', '%real quick%', '%just a quick%'] },
+  { id: 'oneMoreThing', role: 'user', patterns: ['%one more thing%', '%one last thing%', '%last thing%'] },
+  { id: 'shouldWork', role: 'user', patterns: ['%should work%'] },
+  {
+    id: 'stillBroken',
+    role: 'user',
+    patterns: ['%still not working%', '%still broken%', '%still failing%', '%same error%'],
+  },
+  { id: 'areYouSure', role: 'user', patterns: ['%are you sure%'] },
+  { id: 'hallucinate', role: 'user', patterns: ['%hallucinat%'] },
+  { id: 'perfectExclaim', role: 'assistant', patterns: ['%perfect!%'] },
 ];
 
 // Vocabulary mining: words we never crown. Common English + generic dev terms —

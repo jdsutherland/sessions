@@ -93,6 +93,36 @@ export function tokenEquivalence(tokens: number): string | null {
   return tokens >= 400_000 ? 'that’s most of War and Peace' : null;
 }
 
+/** The receipt's version of tokenEquivalence — the bill, in things. */
+export function costEquivalence(costUSD: number): string | null {
+  const scales: { unit: number; many: string }[] = [
+    { unit: 1999, many: 'MacBook Airs' },
+    { unit: 249, many: 'pairs of AirPods Pro' },
+    { unit: 6, many: 'oat-milk lattes' },
+  ];
+  for (const s of scales) {
+    const x = costUSD / s.unit;
+    if (x >= 1.5) {
+      const n = x >= 10 ? fmtInt(Math.round(x)) : x.toFixed(1);
+      return `about ${n} ${s.many}`;
+    }
+  }
+  return null;
+}
+
+/** Pick the type ramp that fits — hero numerals for short strings, then
+ *  progressively smaller word ramps, so a long line (a roast punchline, an
+ *  abandoned project's name) never becomes a wall of 9rem type that outgrows
+ *  its viewport-height card. `min: 'word'` skips the numeral ramp for text
+ *  that is never a number. */
+export function heroClass(text: string, min: 'num' | 'word' = 'num'): string {
+  const cp = [...text].length;
+  if (cp <= 8 && min === 'num') return 'big';
+  if (cp <= 28) return 'big bigword';
+  if (cp <= 80) return 'big midword';
+  return 'big punchline';
+}
+
 interface Card {
   id: string;
   cls?: string;
@@ -191,14 +221,14 @@ function funCard(card: FunCard): Card {
     .join('');
   return {
     id: `fun-${card.id}`,
-    body: `${echo(lead!.big.length <= 8 ? lead!.big : '!?')}<div class="panel">${kicker(card.kicker)}<h2>${esc(card.title)}</h2><div class="big"><span class="n">${esc(lead!.big)}</span></div><p class="lede">${esc(lead!.label)}${lead!.sub ? ` <em>· ${esc(lead!.sub)}</em>` : ''}</p>${restRows}${card.footnote ? foot(card.footnote) : ''}</div>`,
+    body: `${echo(lead!.big.length <= 8 ? lead!.big : '!?')}<div class="panel">${kicker(card.kicker)}<h2>${esc(card.title)}</h2><div class="${heroClass(lead!.big)}"><span class="n">${esc(lead!.big)}</span></div><p class="lede">${esc(lead!.label)}${lead!.sub ? ` <em>· ${esc(lead!.sub)}</em>` : ''}</p>${restRows}${card.footnote ? foot(card.footnote) : ''}</div>`,
   };
 }
 
 function extraCard(x: WrappedExtra, i: number): Card {
   return {
     id: `extra-${i}`,
-    body: `<div class="panel">${kicker(x.title ?? 'guest appearance')}<div class="big bigword"><span class="n">${esc(x.headline)}</span></div>${x.subline ? `<p class="lede">${esc(x.subline)}</p>` : ''}${x.footnote ? foot(x.footnote) : ''}</div>`,
+    body: `<div class="panel">${kicker(x.title ?? 'guest appearance')}<div class="${heroClass(x.headline, 'word')}"><span class="n">${esc(x.headline)}</span></div>${x.subline ? `<p class="lede">${esc(x.subline)}</p>` : ''}${x.footnote ? foot(x.footnote) : ''}</div>`,
   };
 }
 
@@ -231,9 +261,10 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
     });
 
     const cachePct = d.cacheHitRate !== null ? Math.round(d.cacheHitRate * 100) : null;
+    const costEq = costEquivalence(d.totals.costUSD);
     cards.push({
       id: 'cost',
-      body: `${echo(fmtUSD(d.totals.costUSD))}<div class="panel center">${kicker('the receipt')}<h2>All of that, à la carte?</h2>${bigNum(d.totals.costUSD, 'usd')}<p class="lede">what this year would have cost at API list prices</p>${
+      body: `${echo(fmtUSD(d.totals.costUSD))}<div class="panel center">${kicker('the receipt')}<h2>All of that, à la carte?</h2>${bigNum(d.totals.costUSD, 'usd')}<p class="lede">what this year would have cost at API list prices${costEq ? ` — ${esc(costEq)}` : ''}</p>${
         cachePct !== null
           ? `<div class="substat" style="--i:1"><span class="sn">${cachePct}%</span><span class="sl">cache hit rate — ${fmtTokens(d.totals.cacheReadTokens)} tokens re-read from cache instead of full price</span></div>`
           : ''
@@ -313,7 +344,13 @@ ${heatmap(d.rhythm.heat)}
             detail: `${fmtTokens(m.tokens)} tokens · first seen ${shortDate(m.firstSeen)}`,
           })),
           'tok',
-        )}${story}${toolStrip}${foot('ranked by replies · bars show reply volume')}</div>`,
+        )}${story}${toolStrip}${foot(
+          `ranked by replies · bars show reply volume${
+            d.modelsTried > d.models.length
+              ? ` · ${fmtInt(d.modelsTried)} models auditioned, ${d.models.length} made the cut`
+              : ''
+          }`,
+        )}</div>`,
       });
     }
 
@@ -324,6 +361,13 @@ ${heatmap(d.rhythm.heat)}
         body: `${echo(shortDate(d.biggestDay.date))}<div class="panel center">${kicker('the bender')}<h2>Then there was ${esc(formatDate(d.biggestDay.date))}.</h2>${bigNum(d.biggestDay.tokens, 'tok')}<p class="lede">tokens in a single day${
           ratio >= 2 ? ` — <b>${ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1)}×</b> your median day` : ''
         }</p></div>`,
+      });
+    }
+
+    if (d.longestGap && d.longestGap.days >= 7) {
+      cards.push({
+        id: 'vanish',
+        body: `${echo(`${d.longestGap.days}d`)}<div class="panel center">${kicker('the disappearance')}<h2>And then one day — nothing.</h2>${bigNum(d.longestGap.days, 'int')}<p class="lede">days of total silence, <b>${esc(shortDate(d.longestGap.from))}</b> → <b>${esc(shortDate(d.longestGap.to))}</b> — the agents waited</p>${foot('your longest gap between active days · touching grass, presumably')}</div>`,
       });
     }
 
@@ -385,6 +429,7 @@ ${foot('a description of how you worked this year, not who you are · this card 
 
   const creditRows: [string, string][] = [];
   if (d.models[0]) creditRows.push(['starring', prettyModel(d.models[0].label)]);
+  if (d.models[1]) creditRows.push(['the understudy', prettyModel(d.models[1].label)]);
   if (d.content?.topCommands[0]) {
     creditRows.push([
       'featuring',
@@ -393,8 +438,30 @@ ${foot('a description of how you worked this year, not who you are · this card 
   }
   if (d.projects[0]) creditRows.push(['on location', d.projects[0].name]);
   if (d.content?.topFiles[0]) creditRows.push(['set dressing', d.content.topFiles[0].name]);
+  // Busiest month, straight from the daily series — the shooting schedule.
+  const byMonth = new Map<string, number>();
+  for (const day of d.daily) {
+    const mo = day.date.slice(0, 7);
+    byMonth.set(mo, (byMonth.get(mo) ?? 0) + day.tokens);
+  }
+  let peakMonth: { mo: string; tokens: number } | null = null;
+  for (const [mo, tokens] of byMonth) {
+    if (tokens > (peakMonth?.tokens ?? 0)) peakMonth = { mo, tokens };
+  }
+  if (peakMonth) {
+    creditRows.push([
+      'principal photography',
+      `${MONTHS[Number(peakMonth.mo.slice(5)) - 1]} ${peakMonth.mo.slice(0, 4)} — ${fmtTokens(peakMonth.tokens)} tokens`,
+    ]);
+  }
   if (d.content?.errors && d.content.errors.totalErrors > 0) {
     creditRows.push(['stunts', `${fmtInt(d.content.errors.totalErrors)} errors, all survived`]);
+  }
+  if (d.content?.abandoned) {
+    creditRows.push([
+      'in memoriam',
+      `${d.content.abandoned.name} — last seen ${shortDate(d.content.abandoned.lastSeen)}`,
+    ]);
   }
   creditRows.push(['directed by', 'you']);
   cards.push({
@@ -449,7 +516,9 @@ h1 span{display:block;}
 h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line-height:1.15;margin:0 0 18px;text-wrap:balance;}
 .big{margin:10px 0 14px;}
 .big .n{font-size:clamp(4rem,14vw,9.5rem);font-weight:900;letter-spacing:-.04em;line-height:1;color:var(--a);text-shadow:0 0 70px color-mix(in oklch,var(--a) 40%,transparent);}
-.big.bigword .n{font-size:clamp(2.4rem,9vw,5.5rem);letter-spacing:-.02em;text-wrap:balance;}
+.big.bigword .n{font-size:clamp(2.4rem,9vw,5.5rem);letter-spacing:-.02em;text-wrap:balance;overflow-wrap:break-word;}
+.big.midword .n{font-size:clamp(1.8rem,6vw,3.4rem);letter-spacing:-.015em;line-height:1.15;text-wrap:balance;overflow-wrap:break-word;}
+.big.punchline .n{font-size:clamp(1.35rem,4.5vw,2.1rem);font-weight:800;letter-spacing:-.01em;line-height:1.3;text-wrap:balance;overflow-wrap:break-word;}
 .lede{font-size:clamp(1.05rem,2.2vw,1.3rem);color:var(--ink);margin:10px 0 0;text-wrap:balance;}
 .lede em,.sl em{color:var(--muted);font-style:normal;}
 .lede b{color:var(--a);font-weight:800;}

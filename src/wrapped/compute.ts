@@ -207,6 +207,26 @@ export function computeEventStats(events: UsageEvent[], tz: string): WrappedEven
   };
 }
 
+/** Longest run of silent days strictly between two active dates — the
+ *  disappearance. Edges of the period don't count: silence before the first
+ *  session or after the last one is "hadn't started" / "hasn't happened yet". */
+export function longestGapRange(activeDates: string[]): { days: number; from: string; to: string } | null {
+  const dates = [...new Set(activeDates)].sort();
+  let best: { days: number; from: string; to: string } | null = null;
+  for (let i = 1; i < dates.length; i++) {
+    const prev = Date.parse(dates[i - 1]!);
+    const gap = (Date.parse(dates[i]!) - prev) / 86_400_000 - 1;
+    if (gap > (best?.days ?? 0)) {
+      best = {
+        days: gap,
+        from: new Date(prev + 86_400_000).toISOString().slice(0, 10),
+        to: new Date(prev + gap * 86_400_000).toISOString().slice(0, 10),
+      };
+    }
+  }
+  return best;
+}
+
 /** Longest run of consecutive active dates, with its range. */
 export function longestStreakRange(activeDates: string[]): { days: number; from: string; to: string } | null {
   const dates = [...new Set(activeDates)].sort();
