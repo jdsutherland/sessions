@@ -158,8 +158,12 @@ export interface WrappedData {
   rhythm: WrappedRhythm;
   daily: WrappedDay[];
   biggestDay: (WrappedDay & { medianTokens: number }) | null;
+  /** Longest run of consecutive silent days between two active days. */
+  longestGap: { days: number; from: string; to: string } | null;
   projects: WrappedProject[];
   models: WrappedModel[];
+  /** Distinct model ids seen all year — the top-5 list is the cast, this is the audition count. */
+  modelsTried: number;
   tools: WrappedTool[];
   cacheHitRate: number | null;
   longestSession: WrappedLongestSession | null;

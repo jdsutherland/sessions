@@ -13,7 +13,7 @@ import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
 import { localDate } from '../report/parsers/util.ts';
-import { computeEventStats, longestStreakRange } from './compute.ts';
+import { computeEventStats, longestGapRange, longestStreakRange } from './compute.ts';
 import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
@@ -299,7 +299,9 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     biggestDay = { ...peak, medianTokens };
   }
 
-  const streak = longestStreakRange(activeDaily.map((d) => d.date));
+  const activeDates = activeDaily.map((d) => d.date);
+  const streak = longestStreakRange(activeDates);
+  const longestGap = longestGapRange(activeDates);
 
   const fun = selectFunCards(content, ev.rhythm);
   const wordOfYear = selectWordOfYear(content);
@@ -328,8 +330,10 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     rhythm: ev.rhythm,
     daily,
     biggestDay,
+    longestGap,
     projects,
     models,
+    modelsTried: ev.modelFirsts.size,
     tools: toolsOut,
     cacheHitRate: ev.cacheHitRate,
     longestSession: ev.longestSession,

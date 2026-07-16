@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWrapped, parseWrappedArgs, parseExtras } from './index.ts';
+import { longestGapRange } from './compute.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-wrapped-run-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -118,6 +119,21 @@ describe('parseExtras', () => {
   });
 });
 
+describe('longestGapRange', () => {
+  test('finds the widest silence strictly between active days', () => {
+    expect(longestGapRange(['2026-01-01', '2026-01-02', '2026-01-10'])).toEqual({
+      days: 7,
+      from: '2026-01-03',
+      to: '2026-01-09',
+    });
+  });
+  test('consecutive or single days have no gap', () => {
+    expect(longestGapRange(['2026-01-01', '2026-01-02'])).toBeNull();
+    expect(longestGapRange(['2026-01-01'])).toBeNull();
+    expect(longestGapRange([])).toBeNull();
+  });
+});
+
 describe('runWrapped', () => {
   test('computes a year-scoped, sitting-aware wrapped', async () => {
     const res = await runWrapped({
@@ -153,6 +169,10 @@ describe('runWrapped', () => {
     expect(fable.firstSeen).toBe('2026-06-03');
     expect(fable.firstTopDay).toBe('2026-06-03');
     expect(data.dataBegins).toBe('2026-06-01');
+    // Active days are Jun 1, 3, and 22 — the 18 silent days between the 3rd
+    // and the 22nd are the year's longest disappearance.
+    expect(data.longestGap).toEqual({ days: 18, from: '2026-06-04', to: '2026-06-21' });
+    expect(data.modelsTried).toBe(2);
   });
 
   test('--year selects a past calendar year in full', async () => {
@@ -193,6 +213,8 @@ describe('runWrapped', () => {
     expect(html).toContain('id="cover"');
     expect(html).toContain('id="tokens"');
     expect(html).toContain('id="credits"');
+    // The 18-day silence clears the 7-day bar for the disappearance card.
+    expect(html).toContain('id="vanish"');
     // Mid-year runs disclose partial coverage.
     expect(html).toContain('so far');
   });
@@ -286,5 +308,25 @@ describe('runWrapped', () => {
     const html = readFileSync(out, 'utf8');
     expect(html).toContain('A bespoke roast');
     expect(html).toContain('id="extra-0"');
+  });
+
+  test('a long extra headline steps down to the punchline ramp instead of overflowing', async () => {
+    const extrasPath = join(tmp, 'long-extras.json');
+    const long = 'You spent $13,427 asking a machine to fix bugs you introduced while it watched you introduce more';
+    writeFileSync(extrasPath, JSON.stringify([{ headline: long }, { headline: 'Short and mean' }]));
+    const out = join(tmp, 'long-extras.html');
+    await runWrapped({
+      tz: 'UTC',
+      stdout: false,
+      offline: true,
+      roots,
+      now: NOW,
+      out,
+      extras: extrasPath,
+      noContent: true,
+    });
+    const html = readFileSync(out, 'utf8');
+    expect(html).toContain('big punchline');
+    expect(html).toContain('big bigword');
   });
 });

@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { buildCandidates, selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
-import { tokenEquivalence, prettyModel } from './html.ts';
+import { tokenEquivalence, costEquivalence, heroClass, prettyModel } from './html.ts';
 import { cleanTitle, commandFamily, mineWords } from './content.ts';
 import type { WrappedContentStats, WrappedRhythm } from './types.ts';
 import type { WrappedEventStats } from './compute.ts';
@@ -86,6 +86,45 @@ describe('dynamic selection', () => {
     expect(score(wild)).toBeGreaterThan(score(mild));
   });
 
+  test('the lies card assembles from famous last words', () => {
+    const cards = selectFunCards(contentWith({ quickQuestion: 40, shouldWork: 120, oneMoreThing: 25 }), quietRhythm);
+    const lies = cards.find((c) => c.id === 'lies');
+    expect(lies).toBeDefined();
+    expect(lies!.kicker).toBe('famous last words');
+    expect(lies!.stats).toHaveLength(3);
+    expect(lies!.stats[0]!.label).toContain('should work');
+    expect(lies!.stats.some((s) => s.label.includes('quick'))).toBe(true);
+  });
+
+  test('the H-word is notable at low counts, but never at one', () => {
+    const cs = buildCandidates(contentWith({ hallucinate: 3 }), quietRhythm);
+    expect(cs.some((c) => c.stat.label.includes('hallucinate'))).toBe(true);
+    const none = buildCandidates(contentWith({ hallucinate: 1 }), quietRhythm);
+    expect(none.some((c) => c.stat.label.includes('hallucinate'))).toBe(false);
+  });
+
+  test('a manifesto-length message becomes a blooper; a normal one never does', () => {
+    const manifesto = contentWith({}, { monologue: { userAvg: 300, assistantAvg: 900, longestUser: 15_000 } });
+    expect(buildCandidates(manifesto, quietRhythm).some((c) => c.stat.label.includes('longest single message'))).toBe(
+      true,
+    );
+    const modest = contentWith({}, { monologue: { userAvg: 300, assistantAvg: 900, longestUser: 500 } });
+    expect(buildCandidates(modest, quietRhythm).some((c) => c.stat.label.includes('longest single message'))).toBe(
+      false,
+    );
+  });
+
+  test('weekend warriors get called out; weekday coders never do', () => {
+    const heat = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
+    heat[6]![14] = 120; // Saturday afternoon
+    heat[0]![10] = 40; // Sunday morning
+    heat[2]![10] = 240; // Tuesday
+    const cs = buildCandidates(null, { ...quietRhythm, heat });
+    const weekend = cs.find((c) => c.stat.label.includes('weekend'));
+    expect(weekend?.stat.big).toBe('40%');
+    expect(buildCandidates(null, quietRhythm).some((c) => c.stat.label.includes('weekend'))).toBe(false);
+  });
+
   test('apology scoreboard flips its punchline from the data', () => {
     const humanSorry = buildCandidates(contentWith({ userSorry: 20, assistantApology: 5 }), quietRhythm);
     const sb = humanSorry.find((c) => c.stat.label.includes('apology scoreboard'))!;
@@ -139,6 +178,21 @@ describe('display helpers', () => {
     expect(tokenEquivalence(2_000_000)).toContain('War and Peace');
     expect(tokenEquivalence(700_000_000)).toContain('Harry Potter');
     expect(tokenEquivalence(20_000_000_000)).toContain('Wikipedia');
+  });
+
+  test('costEquivalence scales the bill to street prices', () => {
+    expect(costEquivalence(5)).toBeNull();
+    expect(costEquivalence(60)).toContain('oat-milk lattes');
+    expect(costEquivalence(600)).toContain('AirPods');
+    expect(costEquivalence(13_427)).toContain('MacBook Airs');
+  });
+
+  test('heroClass steps the type ramp down as text grows', () => {
+    expect(heroClass('1,024')).toBe('big');
+    expect(heroClass('1,024', 'word')).toBe('big bigword'); // roast text never gets the numeral ramp
+    expect(heroClass('an-abandoned-project-name')).toBe('big bigword');
+    expect(heroClass('x'.repeat(60), 'word')).toBe('big midword');
+    expect(heroClass('x'.repeat(100), 'word')).toBe('big punchline');
   });
 
   test('prettyModel prettifies known families and leaves the rest alone', () => {
