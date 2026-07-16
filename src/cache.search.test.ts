@@ -347,3 +347,144 @@ test('hardening: busy_timeout is set and a corrupt DB rebuilds instead of throwi
   expect(Array.isArray(r)).toBe(true);
   expect(r.map((x) => x.sessionId)).toContain('a'); // rebuilt + reindexed
 });
+
+test('grep: exhaustive literal match counts every session and message', async () => {
+  const r = await cache.grepSessions('zanzibar', {});
+  expect(r.totalHits).toBe(3); // D, E, F each mention it once
+  expect(r.totalSessions).toBe(3);
+  expect(r.hits.every((h) => h.snippet.toLowerCase().includes('zanzibar'))).toBe(true);
+});
+
+test('grep: hit msgIndex + role align with the message it matched', async () => {
+  // Self-contained fixture: a genuine user turn (index 0), a non-genuine injected turn
+  // (index 1, counted-but-unindexed), then an assistant text turn (index 2). The unique
+  // assistant term must resolve to index 2 for offset navigation to land correctly.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'galign', '/repoG', [
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'alignquestion here' }] },
+    },
+    {
+      type: 'user',
+      promptSource: null,
+      message: { role: 'user', content: [{ type: 'text', text: 'injected alignskip' }] },
+    },
+    {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'the alignanswer lives here' }] },
+    },
+  ]);
+  const r = await cache.grepSessions('alignanswer', {});
+  expect(r.totalHits).toBe(1);
+  const h = r.hits[0]!;
+  expect(h.sessionId).toBe('galign');
+  expect(h.role).toBe('assistant');
+  expect(h.msgIndex).toBe(2); // index 1 is the non-genuine turn, skipped-but-counted
+  // The non-genuine turn's text is never indexed, so grep can't reach it.
+  expect((await cache.grepSessions('alignskip', {})).totalHits).toBe(0);
+});
+
+test('grep: non-genuine (injected) user text is not searchable', async () => {
+  // Self-contained so it proves the filter, not a fixture-deletion side effect: seed a
+  // session with a genuine turn + an injected (promptSource:null) turn, each with a unique
+  // term. The genuine term is found; the injected term (never indexed) is not.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'gnongenuine', '/repoG', [
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'genuineterm one' }] },
+    },
+    {
+      type: 'user',
+      promptSource: null,
+      message: { role: 'user', content: [{ type: 'text', text: 'ghostterm injected' }] },
+    },
+  ]);
+  expect((await cache.grepSessions('genuineterm', {})).totalHits).toBe(1); // session is indexed
+  expect((await cache.grepSessions('ghostterm', {})).totalHits).toBe(0); // injected turn excluded
+});
+
+test('grep: exhaustiveness at message granularity — 2 matches in one session', async () => {
+  // The shared fixtures never put 2+ matching messages in one session, so totalHits and
+  // totalSessions always coincide there. This proves grep counts every matching MESSAGE,
+  // not just every session.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'gmulti', '/repoG', [
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'twinterm appears here' }] },
+    },
+    {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'and twinterm appears again' }] },
+    },
+  ]);
+  const r = await cache.grepSessions('twinterm', {});
+  expect(r.totalHits).toBe(2); // both messages
+  expect(r.totalSessions).toBe(1); // in one session
+});
+
+test('grep: case-insensitive literal stays exhaustive for non-ASCII (LIKE prefilter is skipped)', async () => {
+  // Regression for the Unicode fold gap: SQLite LIKE folds ASCII only, so a `%café%`
+  // prefilter would drop a stored "CAFÉ" that the JS /café/i regex matches. The prefilter
+  // must be skipped for non-ASCII case-insensitive patterns.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'gunicode', '/repoG', [
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'migrated the CAFÉ table' }] },
+    },
+  ]);
+  expect((await cache.grepSessions('café', {})).totalHits).toBe(1); // é folds to É
+  expect((await cache.grepSessions('café', { ignoreCase: false })).totalHits).toBe(0);
+});
+
+test('grep: an empty pattern is rejected rather than dumping the whole corpus', async () => {
+  await expect(cache.grepSessions('', {})).rejects.toThrow(/Empty pattern/);
+});
+
+test('grep: a fractional limit is floored, not treated as its ceiling', async () => {
+  const r = await cache.grepSessions('zanzibar', { limit: 1.5 });
+  expect(r.returnedHits).toBe(1); // floor(1.5), not 2
+  expect(r.totalHits).toBe(3);
+});
+
+test('grep: role filter restricts to user or assistant turns', async () => {
+  expect((await cache.grepSessions('zanzibar', { role: 'user' })).totalHits).toBe(3);
+  expect((await cache.grepSessions('zanzibar', { role: 'assistant' })).totalHits).toBe(0);
+});
+
+test('grep: regex mode matches a pattern, literal mode treats it as text', async () => {
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'gregex', '/repoG', [
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { role: 'user', content: [{ type: 'text', text: 'regexterm sample' }] },
+    },
+  ]);
+  expect((await cache.grepSessions('reg[e3]xterm', { regex: true })).totalHits).toBe(1);
+  expect((await cache.grepSessions('reg[e3]xterm', { regex: false })).totalHits).toBe(0);
+});
+
+test('grep: project and tool filters scope results', async () => {
+  expect((await cache.grepSessions('zanzibar', { project: '/repoD' })).totalSessions).toBe(1);
+  expect((await cache.grepSessions('zanzibar', { tool: 'claude' })).totalHits).toBe(3);
+  expect((await cache.grepSessions('zanzibar', { tool: 'codex' })).totalHits).toBe(0);
+});
+
+test('grep: limit caps returned snippets but totalHits counts all (honest truncation)', async () => {
+  const r = await cache.grepSessions('zanzibar', { limit: 1 });
+  expect(r.returnedHits).toBe(1);
+  expect(r.totalHits).toBe(3);
+  expect(r.truncated).toBe(true);
+});
+
+test('grep: case-insensitive by default, exact when ignoreCase=false', async () => {
+  expect((await cache.grepSessions('ZANZIBAR', {})).totalHits).toBe(3);
+  expect((await cache.grepSessions('ZANZIBAR', { ignoreCase: false })).totalHits).toBe(0);
+});
+
+test('grep: an invalid regex throws a friendly error', async () => {
+  await expect(cache.grepSessions('(unclosed', { regex: true })).rejects.toThrow(/Invalid regex/);
+});
