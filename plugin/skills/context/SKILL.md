@@ -3,7 +3,11 @@ name: context
 description: >-
   Load a context primer for the current repo before starting work. Use when the
   user says "what was I doing here", "catch me up on this repo", "context primer",
-  "what's the open thread", or when resuming work on a codebase after a break.
+  "what's the open thread", "where did I/we leave off" — and PROACTIVELY when a
+  session opens on work that clearly continues something ("keep going on the
+  refactor", "finish the migration") or when resuming a codebase after a break.
+  Past sessions carry the open thread, prior decisions, and abandoned approaches
+  that code and git history don't show.
 argument-hint: optional repo path
 ---
 

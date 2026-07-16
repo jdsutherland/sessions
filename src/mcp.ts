@@ -8,10 +8,18 @@ import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
 import { type Tool } from './types';
 
-const server = new McpServer({
-  name: 'sessions',
-  version: '1.2.0',
-});
+const server = new McpServer(
+  {
+    name: 'sessions',
+    version: '1.2.0',
+  },
+  {
+    instructions:
+      'Searchable history of every past AI coding session (Claude Code, Codex, Pi) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
+      'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
+      'Prefer bounded calls: get_session_digest over paging full transcripts.',
+  },
+);
 
 // Exported, testable seam: the search_sessions tool delegates to this so its behavior
 // (errored filter, per-result metadata, resumeCommand) can be unit-tested without MCP.
@@ -41,7 +49,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+  'Search across all past AI coding sessions from Claude Code, Codex, and Pi. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
   {
     query: z
       .string()
@@ -141,7 +149,7 @@ server.tool(
 
 server.tool(
   'get_activity_digest',
-  'Get a digest of AI coding sessions within a date range, grouped by day and project. Use "highlights" for summaries — it includes first+last user messages for substantive sessions. Use "compact" for just topics, or "full" for all user messages.',
+  'Get a digest of AI coding sessions within a date range, grouped by day and project. Use for time-scoped questions — "what did I do yesterday/last week", standups, weekly recaps — where search_sessions (topic-scoped) is the wrong shape. Use "highlights" for summaries — it includes first+last user messages for substantive sessions. Use "compact" for just topics, or "full" for all user messages.',
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
@@ -192,7 +200,7 @@ server.tool(
 
 server.tool(
   'get_context_primer',
-  'Get a repo-scoped context primer (recent sessions in detail + older headlines) for re-injecting prior work into a new session. Synthesize the JSON into prose.',
+  'Get a repo-scoped context primer (recent sessions in detail + older headlines) for re-injecting prior work into a new session. Use when starting substantive work in a repo that likely has session history — especially resuming after a break or when the user asks "where did we leave off" / "catch me up". Synthesize the JSON into prose.',
   {
     cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
     limit: z.number().optional().describe('Recent-tier size (default 10).'),

@@ -214,6 +214,10 @@ async function runContextHook(args: ContextArgs): Promise<void> {
 
     // Never widen detail in hook mode — keep the injected block small.
     process.stdout.write(renderMarkdown(primer, false));
+    // Standing pointer for the agent: the primer is a snapshot, not the archive.
+    process.stdout.write(
+      '\n> This is a snapshot of recent sessions on this repo. Full history across all past sessions is searchable — use the sessions MCP tools (search_sessions, get_session_digest, get_context_primer) when prior work, decisions, or dead ends are referenced.\n',
+    );
   } catch {
     // Any failure at session start degrades to injecting nothing.
   }
