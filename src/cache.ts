@@ -649,6 +649,168 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   }));
 }
 
+export interface GrepOptions {
+  /** Treat the pattern as a JS regular expression. Default false = literal substring. */
+  regex?: boolean;
+  /** Case-insensitive match (default true). */
+  ignoreCase?: boolean;
+  /** Restrict to one message role. */
+  role?: 'user' | 'assistant';
+  tool?: Tool | '';
+  project?: string;
+  /** Session date (YYYY-MM-DD) lower/upper bounds, inclusive. */
+  after?: string;
+  before?: string;
+  /** Max hit snippets to return (default 50). totalHits still counts every match. */
+  limit?: number;
+  /** Snippet radius in chars around the match (default 60). */
+  contextChars?: number;
+}
+
+export interface GrepHit {
+  tool: Tool;
+  project: string;
+  sessionId: string;
+  filePath: string;
+  date: string;
+  role: 'user' | 'assistant';
+  /** Feeds get_session_messages(offset) directly — same numbering as message_fts. */
+  msgIndex: number;
+  snippet: string;
+}
+
+export interface GrepResult {
+  /** Messages containing at least one match (across the whole corpus, uncapped). */
+  totalHits: number;
+  /** Distinct sessions with a match. */
+  totalSessions: number;
+  returnedHits: number;
+  /** True when totalHits exceeds the returned snippets (some hits not shown). */
+  truncated: boolean;
+  hits: GrepHit[];
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Exhaustive literal-or-regex match over every indexed message (genuine user turns +
+ * assistant text), unlike searchSessions which is ranked and top-k. Each hit carries
+ * filePath + msgIndex so it feeds get_session_messages(offset) with no extra lookup.
+ * Streams message rows so memory stays O(limit) however large the corpus. Matches the
+ * same text corpus as search (message_fts): assistant tool-call inputs are not indexed,
+ * so a command string won't be found here — grep prose, navigate to the turn, then read
+ * it with include_tools.
+ */
+export async function grepSessions(pattern: string, opts: GrepOptions = {}): Promise<GrepResult> {
+  if (!pattern) throw new Error('Empty pattern: pass a non-empty string to search for.');
+
+  const db = getDb();
+  await refreshIndex();
+
+  const ignoreCase = opts.ignoreCase ?? true;
+  // Guard against fractional/negative limits so `hits.length < limit` behaves as a
+  // whole-number "max snippets" cap; 0 is allowed (count-only, snippets suppressed).
+  const limit = Math.max(0, Math.floor(opts.limit ?? 50));
+  const radius = Math.max(0, Math.floor(opts.contextChars ?? 60));
+
+  let re: RegExp;
+  try {
+    re = new RegExp(opts.regex ? pattern : escapeRegExp(pattern), ignoreCase ? 'i' : '');
+  } catch (e) {
+    throw new Error(`Invalid regex pattern: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  const conditions: string[] = ['m.msg_index >= 0']; // exclude the subagent sentinel (-1)
+  const params: (string | number)[] = [];
+  if (opts.role) {
+    conditions.push('m.role = ?');
+    params.push(opts.role);
+  }
+  if (opts.tool) {
+    conditions.push('s.tool = ?');
+    params.push(opts.tool);
+  }
+  if (opts.project) {
+    conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
+    params.push(opts.project, globPrefix(opts.project));
+  }
+  if (opts.after) {
+    conditions.push('s.date >= ?');
+    params.push(opts.after);
+  }
+  if (opts.before) {
+    conditions.push('s.date <= ?');
+    params.push(opts.before);
+  }
+  // Literal mode: a LIKE filter cuts rows before the JS regex confirms each match — a huge
+  // win for rare terms. But SQLite LIKE folds case for ASCII only, while the JS `/i` regex
+  // folds Unicode too, so for a case-insensitive pattern containing a non-ASCII letter the
+  // LIKE is NOT a superset (`%café%` would drop a stored "CAFÉ" the regex would match).
+  // Apply the prefilter only when it's provably a superset: case-sensitive, or ASCII-only
+  // pattern. Otherwise stream the full candidate set and let the regex alone decide (as
+  // regex mode already does). Regex mode is never prefiltered.
+  const asciiOnly = ![...pattern].some((ch) => ch.codePointAt(0)! > 0x7f);
+  if (!opts.regex && (!ignoreCase || asciiOnly)) {
+    conditions.push("m.text LIKE '%' || ? || '%' ESCAPE '\\'");
+    params.push(pattern.replace(/[\\%_]/g, (c) => `\\${c}`));
+  }
+
+  interface Row {
+    filePath: string;
+    msgIndex: number;
+    role: string;
+    text: string;
+    tool: string;
+    cwd: string;
+    date: string;
+    sessionId: string;
+  }
+  const stmt = db.query<Row, any[]>(`
+    SELECT m.file_path AS filePath, m.msg_index AS msgIndex, m.role AS role, m.text AS text,
+           s.tool AS tool, s.cwd AS cwd, s.date AS date, s.session_id AS sessionId
+    FROM message_fts m JOIN sessions s ON s.file_path = m.file_path
+    WHERE ${conditions.join(' AND ')}
+  `);
+
+  let totalHits = 0;
+  const sessions = new Set<string>();
+  const hits: GrepHit[] = [];
+  for (const row of stmt.iterate(...params)) {
+    const m = re.exec(row.text); // non-global regex → always scans from position 0
+    if (!m) continue;
+    totalHits++;
+    sessions.add(row.filePath);
+    if (hits.length < limit) {
+      const pos = m.index;
+      const start = Math.max(0, pos - radius);
+      const end = Math.min(row.text.length, pos + m[0].length + radius);
+      let snippet = row.text.slice(start, end).replace(/\s+/g, ' ').trim();
+      if (start > 0) snippet = '…' + snippet;
+      if (end < row.text.length) snippet = snippet + '…';
+      hits.push({
+        tool: row.tool as Tool,
+        project: row.cwd,
+        sessionId: row.sessionId,
+        filePath: row.filePath,
+        date: row.date,
+        role: row.role as 'user' | 'assistant',
+        msgIndex: row.msgIndex,
+        snippet,
+      });
+    }
+  }
+
+  return {
+    totalHits,
+    totalSessions: sessions.size,
+    returnedHits: hits.length,
+    truncated: totalHits > hits.length,
+    hits,
+  };
+}
+
 /**
  * Resolve a session id to its indexed JSONL file path. Refreshes the index
  * first (same as searchSessions) so recently created sessions resolve too.

@@ -220,10 +220,74 @@ export function contentMatches(lines: string[], query: string): boolean {
   return false;
 }
 
+/** A tool invocation the assistant made, reduced to its name and one salient input. */
+export interface ToolUse {
+  name: string;
+  /** One-line, human-readable summary of the salient input (command, path, url, …); '' if none. */
+  summary: string;
+}
+
 export interface SessionMessage {
   role: 'user' | 'assistant';
   text: string;
   index: number;
+  /** Tool calls belonging to this turn (empty for most user turns). See extractMessages. */
+  tools: ToolUse[];
+}
+
+/** Input fields, most-informative first, used to summarize a tool call for display. */
+const TOOL_SUMMARY_KEYS = [
+  'command',
+  'file_path',
+  'path',
+  'pattern',
+  'url',
+  'query',
+  'skill',
+  'description',
+  'prompt',
+  'old_string',
+];
+
+/** Reduce a tool_use input object to a single short, human-readable line. */
+function summarizeToolInput(input: unknown): string {
+  if (!input || typeof input !== 'object') return '';
+  const o = input as Record<string, unknown>;
+  let val: string | undefined;
+  for (const k of TOOL_SUMMARY_KEYS) {
+    const v = o[k];
+    if (typeof v === 'string' && v.trim()) {
+      val = v;
+      break;
+    }
+  }
+  if (val === undefined) {
+    const firstStr = Object.values(o).find((v) => typeof v === 'string' && v.trim());
+    if (typeof firstStr === 'string') val = firstStr;
+  }
+  if (!val) return '';
+  const s = val.replace(/\s+/g, ' ').trim();
+  return s.length > 120 ? s.slice(0, 120) + '…' : s;
+}
+
+/**
+ * The tool_use blocks on a single assistant/message line, in order. Recognizes the
+ * Claude/Anthropic content-array shape (`{type:'tool_use', name, input}`); returns []
+ * for shapes it doesn't model (most pi/codex tool calls), which is a display-only gap.
+ */
+function extractToolUses(d: JsonLine): ToolUse[] {
+  const msg = d.message;
+  if (!msg || typeof msg !== 'object') return [];
+  const content = (msg as Record<string, unknown>).content;
+  if (!Array.isArray(content)) return [];
+  const out: ToolUse[] = [];
+  for (const c of content) {
+    if (c && typeof c === 'object' && (c as Record<string, unknown>).type === 'tool_use') {
+      const rec = c as Record<string, unknown>;
+      out.push({ name: typeof rec.name === 'string' ? rec.name : '?', summary: summarizeToolInput(rec.input) });
+    }
+  }
+  return out;
 }
 
 function extractAssistantText(d: JsonLine): string {
@@ -269,6 +333,13 @@ export interface ExtractedMessage {
   index: number;
   /** user turns: isGenuineUserTurn; assistant turns: always true. */
   genuine: boolean;
+  /**
+   * Tool calls belonging to this turn. A pure-tool-use assistant line carries no text
+   * and so gets no index of its own; its calls fold into the current turn's head
+   * message here. This keeps numbering dense (array[i].index === i) — the invariant
+   * get_session_messages pagination and search-hit offsets both depend on.
+   */
+  tools: ToolUse[];
 }
 
 /**
@@ -282,17 +353,35 @@ export interface ExtractedMessage {
 export function extractMessages(lines: string[]): ExtractedMessage[] {
   const messages: ExtractedMessage[] = [];
   let idx = 0;
+  // The turn's head message — where a following pure-tool-use line's calls attach.
+  let current: ExtractedMessage | null = null;
+  // Tool calls seen before any message was emitted (rare: a session opening on a tool
+  // call). Buffered here and flushed onto the first emitted message.
+  let pending: ToolUse[] = [];
   for (const line of lines) {
     const d = tryParseJson(line);
     if (!d) continue;
     if (isUserMessage(d)) {
       const text = extractUserText(d);
       if (text.trim()) {
-        messages.push({ role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()) });
+        current = { role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()), tools: pending };
+        pending = [];
+        messages.push(current);
       }
+      // A user line with no text is a tool_result/empty turn — it carries no tool_use
+      // and must not reset `current` (assistant calls after it still belong to the turn).
     } else {
       const text = extractAssistantText(d);
-      if (text.trim()) messages.push({ role: 'assistant', text, index: idx++, genuine: true });
+      const tools = extractToolUses(d);
+      if (text.trim()) {
+        current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending.concat(tools) };
+        pending = [];
+        messages.push(current);
+      } else if (tools.length) {
+        // Pure tool-use turn: no text row (so no index), fold its calls into the head.
+        if (current) current.tools.push(...tools);
+        else pending.push(...tools);
+      }
     }
   }
   return messages;
@@ -300,7 +389,7 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
 
 /** Thin projection of extractMessages — same messages, same numbering, no genuine flag. */
 export function getSessionMessages(lines: string[]): SessionMessage[] {
-  return extractMessages(lines).map(({ role, text, index }) => ({ role, text, index }));
+  return extractMessages(lines).map(({ role, text, index, tools }) => ({ role, text, index, tools }));
 }
 
 /** Max length of each stored closing message (bounds the indexed columns). */

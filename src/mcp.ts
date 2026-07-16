@@ -1,8 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
-import { formatResult } from './search-format';
+import { searchSessions, grepSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
+import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages } from './parser';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
@@ -18,6 +18,7 @@ const server = new McpServer(
     instructions:
       'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
       'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
+      'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
       'Prefer bounded calls: get_session_digest over paging full transcripts.',
   },
 );
@@ -50,7 +51,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+  'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
   {
     query: z
       .string()
@@ -73,6 +74,83 @@ server.tool(
     runSearchSessions({ query, tool, project, errored, files, limit }),
 );
 
+// Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
+// behavior, totals, and truncation can be unit-tested without MCP plumbing.
+export async function runGrepSessions(args: {
+  pattern: string;
+  regex?: boolean;
+  ignoreCase?: boolean;
+  role?: 'user' | 'assistant';
+  tool?: Tool;
+  project?: string;
+  after?: string;
+  before?: string;
+  limit?: number;
+}): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+  let result;
+  try {
+    result = await grepSessions(args.pattern, {
+      regex: args.regex,
+      ignoreCase: args.ignoreCase,
+      role: args.role,
+      tool: args.tool ?? '',
+      project: args.project ?? '',
+      after: args.after,
+      before: args.before,
+      limit: args.limit ?? 50,
+    });
+  } catch (e) {
+    return { content: [{ type: 'text' as const, text: e instanceof Error ? e.message : String(e) }], isError: true };
+  }
+
+  if (result.totalHits === 0) {
+    return { content: [{ type: 'text' as const, text: 'No matching messages found.' }] };
+  }
+
+  const payload = {
+    totalHits: result.totalHits,
+    totalSessions: result.totalSessions,
+    returnedHits: result.returnedHits,
+    truncated: result.truncated,
+    hits: result.hits.map((h) => ({
+      tool: h.tool,
+      project: h.project,
+      sessionId: h.sessionId,
+      filePath: h.filePath,
+      date: h.date,
+      role: h.role,
+      msgIndex: h.msgIndex,
+      snippet: h.snippet,
+      resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
+    })),
+  };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
+}
+
+server.tool(
+  'grep_sessions',
+  'Exhaustively find EVERY message across all past sessions matching a literal string or regex — use this (not search_sessions) whenever completeness or a count matters: "every time I said X", "how many times", "all sessions where…", or any exact-pattern search. Returns totalHits (uncapped count of matching messages), totalSessions, and up to `limit` hit snippets; each hit carries filePath + msgIndex to feed get_session_messages(offset) directly (add include_tools to see what the assistant did around it). truncated=true means more matched than were returned — raise limit or narrow with filters. Searches message prose (user turns + assistant text), not assistant tool-call inputs.',
+  {
+    pattern: z.string().min(1).describe('Literal substring by default; a JS regex when regex=true.'),
+    regex: z.boolean().optional().default(false).describe('Treat pattern as a JS regular expression.'),
+    ignoreCase: z.boolean().optional().default(true).describe('Case-insensitive match (default true).'),
+    role: z.enum(['user', 'assistant']).optional().describe('Restrict to your turns (user) or the AI (assistant).'),
+    tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool.'),
+    project: z.string().optional().describe('Filter to sessions from this project directory path.'),
+    after: z.string().optional().describe('Only sessions on/after this date (YYYY-MM-DD).'),
+    before: z.string().optional().describe('Only sessions on/before this date (YYYY-MM-DD).'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .default(50)
+      .describe('Max hit snippets to return (default 50). totalHits still counts all.'),
+  },
+  async ({ pattern, regex, ignoreCase, role, tool, project, after, before, limit }) =>
+    runGrepSessions({ pattern, regex, ignoreCase, role, tool, project, after, before, limit }),
+);
+
 // Exported, testable seam like runSearchSessions: the get_session_messages tool
 // delegates here so the search-hit → offset alignment can be integration-tested
 // without MCP plumbing. Pagination runs over getSessionMessages, whose numbering
@@ -81,9 +159,11 @@ export async function runGetSessionMessages(args: {
   filePath: string;
   offset?: number;
   limit?: number;
+  includeTools?: boolean;
 }): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   const offset = args.offset ?? 0;
   const limit = args.limit ?? 20;
+  const includeTools = args.includeTools ?? false;
 
   const lines = readSessionLines(args.filePath);
   if (lines.length === 0) {
@@ -96,7 +176,17 @@ export async function runGetSessionMessages(args: {
     total: allMessages.length,
     offset,
     returned: page.length,
-    messages: page.map((m) => ({ role: m.role, text: m.text })),
+    messages: page.map((m) =>
+      includeTools
+        ? {
+            role: m.role,
+            text: m.text,
+            // Rendered as `Name(summary)` one-liners; a turn's tool calls fold in here
+            // (pure-tool-use turns have no index of their own).
+            tools: m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name)),
+          }
+        : { role: m.role, text: m.text },
+    ),
   };
 
   return {
@@ -106,7 +196,7 @@ export async function runGetSessionMessages(args: {
 
 server.tool(
   'get_session_messages',
-  'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions as the offset to start at the matched message.',
+  'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions (or a grep_sessions hit\'s msgIndex) as the offset to start at the matched message. Set include_tools=true to also see the tool calls the assistant made in each turn (Edit, Bash, Read, …) rendered as one-liners — use it to answer "what did the AI actually do here", which the prose alone often omits.',
   {
     filePath: z.string().describe('The session filePath from search_sessions results'),
     offset: z
@@ -115,8 +205,14 @@ server.tool(
       .default(0)
       .describe('Message index to start from (default 0). messageHits[].index values from search_sessions align 1:1.'),
     limit: z.number().optional().default(20).describe('Max messages to return (default 20)'),
+    include_tools: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe("Include each turn's assistant tool calls as `Name(summary)` one-liners (default false)."),
   },
-  async ({ filePath, offset, limit }) => runGetSessionMessages({ filePath, offset, limit }),
+  async ({ filePath, offset, limit, include_tools }) =>
+    runGetSessionMessages({ filePath, offset, limit, includeTools: include_tools }),
 );
 
 // Exported, testable seam like runGetSessionMessages: the get_session_digest tool

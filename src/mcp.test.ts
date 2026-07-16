@@ -212,3 +212,55 @@ test('get_session_digest returns empty exchanges for sessions with no genuine tu
   expect(digest.exchanges).toEqual([]);
   expect(digest.messageCount).toBe(1);
 });
+
+// ——— grep_sessions — additive ———
+
+test('grep_sessions: exhaustive hit carries msgIndex that feeds get_session_messages', async () => {
+  const res = await mcp.runGrepSessions({ pattern: 'flaky' });
+  const parsed = JSON.parse(res.content[0]!.text);
+  expect(parsed.totalHits).toBe(1);
+  expect(parsed.totalSessions).toBe(1);
+  const hit = parsed.hits[0];
+  expect(hit.sessionId).toBe('b');
+  expect(hit.role).toBe('user');
+  expect(hit.resumeCommand).toContain('claude --resume');
+
+  const page = await mcp.runGetSessionMessages({ filePath: hit.filePath, offset: hit.msgIndex, limit: 1 });
+  const paged = JSON.parse(page.content[0]!.text);
+  expect(paged.messages[0].text).toContain('flaky');
+});
+
+test('grep_sessions: regex mode matches an assistant turn', async () => {
+  const res = await mcp.runGrepSessions({ pattern: 'mango\\w+', regex: true });
+  const parsed = JSON.parse(res.content[0]!.text);
+  expect(parsed.hits[0].role).toBe('assistant');
+  expect(parsed.hits[0].msgIndex).toBe(2);
+});
+
+test('grep_sessions: no match returns a friendly message', async () => {
+  const res = await mcp.runGrepSessions({ pattern: 'nonexistent-term-xyz' });
+  expect(res.content[0]!.text).toContain('No matching messages found');
+});
+
+test('grep_sessions: an invalid regex surfaces isError', async () => {
+  const res = await mcp.runGrepSessions({ pattern: '(unclosed', regex: true });
+  expect(res.isError).toBe(true);
+  expect(res.content[0]!.text).toContain('Invalid regex');
+});
+
+// ——— get_session_messages include_tools — additive ———
+
+test('get_session_messages include_tools renders the turn tool calls', async () => {
+  const file = join(tmp, 'claude', 'proj', 'c.jsonl');
+  const res = await mcp.runGetSessionMessages({ filePath: file, offset: 0, limit: 1, includeTools: true });
+  const parsed = JSON.parse(res.content[0]!.text);
+  // Session C's Edit is a pure-tool-use turn folded onto the user turn (index 0).
+  expect(parsed.messages[0].tools).toContain('Edit(/repoC/src/billing.ts)');
+});
+
+test('get_session_messages omits tools by default (back-compat shape)', async () => {
+  const file = join(tmp, 'claude', 'proj', 'c.jsonl');
+  const res = await mcp.runGetSessionMessages({ filePath: file, offset: 0, limit: 1 });
+  const parsed = JSON.parse(res.content[0]!.text);
+  expect(parsed.messages[0].tools).toBeUndefined();
+});

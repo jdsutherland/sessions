@@ -425,3 +425,96 @@ describe('closingMessages assistant side', () => {
     expect(a).toContain('pick the first.');
   });
 });
+
+describe('tool-call extraction (include_tools support)', () => {
+  test('a pure-tool-use assistant line folds into the current turn head, no new index', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'do the thing' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'On it.' }] } },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/a/b.ts' } }] },
+      },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'bun test' } }] } },
+    );
+    const msgs = extractMessages(lines);
+    // Two indexed messages only — the two pure-tool lines added no rows.
+    expect(msgs.map((m) => m.index)).toEqual([0, 1]);
+    expect(msgs[1]!.tools.map((t) => t.name)).toEqual(['Edit', 'Bash']);
+    expect(msgs[1]!.tools[1]!.summary).toBe('bun test');
+  });
+
+  test('tool_use sharing a line with text attaches to that same message', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'go' }] } },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Reading it.' },
+            { type: 'tool_use', name: 'Read', input: { file_path: '/x/y.ts' } },
+          ],
+        },
+      },
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs[1]!.text).toContain('Reading it.');
+    expect(msgs[1]!.tools).toEqual([{ name: 'Read', summary: '/x/y.ts' }]);
+  });
+
+  test('assistant tool with no prior assistant text folds into the user turn (still no new index)', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'deploy' }] } },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'kubectl apply' } }] },
+      },
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.role).toBe('user');
+    expect(msgs[0]!.tools).toEqual([{ name: 'Bash', summary: 'kubectl apply' }]);
+  });
+
+  test('a tool_result user line does not reset the turn or absorb tools', () => {
+    const lines = jsonl(
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Grep', input: { pattern: 'TODO' } }] } },
+    );
+    const msgs = extractMessages(lines);
+    // The tool_result line produced no message; Grep folds back into the assistant turn.
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.tools.map((t) => t.name)).toEqual(['Grep']);
+    expect(msgs[0]!.tools[0]!.summary).toBe('TODO');
+  });
+
+  test('adding tools does not perturb the dense numbering getSessionMessages depends on', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'a' }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'b' }] } },
+    );
+    const extracted = extractMessages(lines);
+    const legacy = getSessionMessages(lines);
+    expect(extracted.map((m) => m.index)).toEqual([0, 1]);
+    expect(legacy.map((m) => m.index)).toEqual([0, 1]);
+    expect(legacy[0]!.tools.map((t) => t.name)).toEqual(['Bash']); // folded onto the user turn
+  });
+
+  test('summary prefers command over other fields and truncates long values', () => {
+    const long = 'x'.repeat(200);
+    const lines = jsonl({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'run' },
+          { type: 'tool_use', name: 'Bash', input: { command: long, description: 'ignored' } },
+        ],
+      },
+    });
+    const t = extractMessages(lines)[0]!.tools[0]!;
+    expect(t.summary.endsWith('…')).toBe(true);
+    expect(t.summary.length).toBe(121); // 120 chars + ellipsis
+  });
+});
