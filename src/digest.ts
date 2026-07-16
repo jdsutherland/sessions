@@ -1,6 +1,8 @@
+import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 import { extractMessages, stripInsightFences } from './parser';
 import { resolveSessionFile } from './cache';
+import { readSessionLines } from './session-io';
 
 export interface DigestExchange {
   /** Message index of the user turn — feeds get_session_messages(offset). */
@@ -175,21 +177,22 @@ export function parseDigestArgs(argv: string[]): DigestArgs {
 }
 
 export async function runDigest(args: DigestArgs): Promise<void> {
+  // Try the target as a session path first (real file or synthetic OpenCode path);
+  // only a target that doesn't exist on disk is treated as a session id and
+  // resolved through the index — an existing-but-unreadable path is a read error,
+  // never silently reinterpreted as an (possibly colliding) id.
   let filePath = args.target;
-  if (!(await Bun.file(filePath).exists())) {
+  let lines = readSessionLines(filePath);
+  if (lines.length === 0) {
+    if (existsSync(filePath)) die(`could not read ${filePath}`);
     const resolved = await resolveSessionFile(args.target);
     if (!resolved) die(`no session matching ${args.target} — try \`sessions <query>\` to find it`);
     filePath = resolved;
+    lines = readSessionLines(filePath);
+    if (lines.length === 0) die(`could not read ${filePath}`);
   }
 
-  let raw: string;
-  try {
-    raw = await Bun.file(filePath).text();
-  } catch (e) {
-    die(`could not read ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
-  const digest = buildSessionDigest(raw.trimEnd().split('\n'));
+  const digest = buildSessionDigest(lines);
   const md = renderDigestMarkdown(digest, basename(filePath));
   process.stdout.write(md.endsWith('\n') ? md : md + '\n');
 }

@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
@@ -32,6 +32,8 @@ import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
+import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
+import { readSessionLines, statSession } from './session-io';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -94,6 +96,7 @@ export function closeDb(): void {
     _db?.close();
   } catch {}
   _db = null;
+  closeOpencodeDb();
 }
 
 // Open (or create) the index DB and bring it to the v6 schema, resolving the path
@@ -254,6 +257,11 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
+  // OpenCode has no per-session files — sessions live in one SQLite DB, so each
+  // discovered "file" is a synthetic dbPath/sessionId handle (see src/opencode.ts).
+  // Returns [] when the DB is absent.
+  entries.push(...discoverOpencodeSessions());
+
   return entries;
 }
 
@@ -279,13 +287,17 @@ function collectSubagentContent(filePath: string): string {
   return parts.join('\n');
 }
 
+/** Searchable subagent text folded into the parent session: Claude keeps sibling
+ *  transcript files, OpenCode keeps child sessions in its DB; other tools have none. */
+function collectSubagentText(filePath: string, tool: Tool): string {
+  if (tool === 'claude') return collectSubagentContent(filePath);
+  if (tool === 'opencode') return collectOpencodeSubagentText(filePath);
+  return '';
+}
+
 function indexFile(db: Database, filePath: string, tool: Tool): boolean {
-  let stat;
-  try {
-    stat = statSync(filePath);
-  } catch {
-    return false;
-  }
+  const stat = statSession(filePath, tool);
+  if (!stat) return false;
 
   const existing = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
@@ -295,13 +307,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     return false;
   }
 
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, 'utf-8');
-  } catch {
-    return false;
-  }
-  const lines = raw.trimEnd().split('\n');
+  const lines = readSessionLines(filePath, tool);
   if (lines.length === 0) return false;
 
   const cwd = getCwdFromSession(lines, tool);
@@ -311,12 +317,12 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const sessionId = basename(filePath).replace('.jsonl', '');
   const prompt = firstPrompt(lines, tool);
   const title = customTitle(lines);
-  const date = lastTimestamp(raw);
+  const date = lastTimestamp(lines);
   const createdAt = firstTimestamp(lines);
   const msgCount = messageCount(lines);
 
   const messages = extractMessages(lines);
-  const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
+  const subagentContent = collectSubagentText(filePath, tool);
 
   const filesTouchedArr = extractFiles(lines, tool);
   const filesTouched = JSON.stringify(filesTouchedArr);
@@ -713,24 +719,19 @@ interface PendingGroup {
 }
 
 function readUserMessages(filePath: string, mode: 'full' | 'highlights'): string[] {
-  try {
-    const raw = readFileSync(filePath, 'utf-8');
-    const lines = raw.trimEnd().split('\n');
-    const msgs = getSessionMessages(lines).filter((m) => m.role === 'user');
-    if (msgs.length === 0) return [];
+  const lines = readSessionLines(filePath);
+  const msgs = getSessionMessages(lines).filter((m) => m.role === 'user');
+  if (msgs.length === 0) return [];
 
-    const cap = (t: string, len: number) => (t.length > len ? t.slice(0, len) + '…' : t);
+  const cap = (t: string, len: number) => (t.length > len ? t.slice(0, len) + '…' : t);
 
-    if (mode === 'highlights') {
-      const result = [cap(msgs[0]!.text, 300)];
-      if (msgs.length > 1) result.push(cap(msgs[msgs.length - 1]!.text, 300));
-      return result;
-    }
-
-    return msgs.slice(0, MAX_USER_MESSAGES).map((m) => cap(m.text, MAX_MESSAGE_LENGTH));
-  } catch {
-    return [];
+  if (mode === 'highlights') {
+    const result = [cap(msgs[0]!.text, 300)];
+    if (msgs.length > 1) result.push(cap(msgs[msgs.length - 1]!.text, 300));
+    return result;
   }
+
+  return msgs.slice(0, MAX_USER_MESSAGES).map((m) => cap(m.text, MAX_MESSAGE_LENGTH));
 }
 
 export type DigestDetail = 'compact' | 'highlights' | 'full';
@@ -863,9 +864,8 @@ export async function getSessionMetrics(
 
   for (const r of rows) {
     try {
-      const raw = readFileSync(r.file_path, 'utf-8');
-      const firstLine = raw.slice(0, raw.indexOf('\n'));
-      const d = JSON.parse(firstLine);
+      const lines = readSessionLines(r.file_path, r.tool as Tool);
+      const d = JSON.parse(lines[0] ?? '{}');
       const ts = d.timestamp as string | undefined;
       if (ts && ts.includes('T')) {
         const hour = ts.slice(11, 13);
