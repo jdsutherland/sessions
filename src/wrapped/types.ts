@@ -100,7 +100,8 @@ export interface WrappedContentStats {
   errors: { sessionsErrored: number; totalErrors: number; cursedWeekday: number | null; cursedCount: number } | null;
   topFiles: { name: string; sessions: number }[];
   topCommands: { name: string; sessions: number }[];
-  /** Mined from genuine user prompts: distinctive vocabulary, not stopwords. */
+  /** Mined from genuine user prompts: distinctive vocabulary, not stopwords.
+   *  `count` is messages containing the word (deduped per message, paste-proof). */
   words: { word: string; count: number; sessions: number }[];
   /** Median raw message_count per engaged session (drive-bys excluded) — the persona depth axis. */
   depthMedian: number | null;
@@ -157,7 +158,9 @@ export interface WrappedData {
   totals: WrappedTotals;
   rhythm: WrappedRhythm;
   daily: WrappedDay[];
-  biggestDay: (WrappedDay & { medianTokens: number }) | null;
+  /** Peak day, ranked by tokens (or by messages on zero-token local-model years).
+   *  Both medians are carried so the renderer compares like-with-like. */
+  biggestDay: (WrappedDay & { medianTokens: number; medianMessages: number }) | null;
   /** Longest run of consecutive silent days between two active days. */
   longestGap: { days: number; from: string; to: string } | null;
   projects: WrappedProject[];

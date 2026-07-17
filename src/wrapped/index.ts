@@ -17,6 +17,7 @@ import { computeEventStats, longestGapRange, longestStreakRange } from './comput
 import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
+import { canonicalModel, isRealModel } from './model-name.ts';
 import { coerceExtras } from './extras.ts';
 import { runRoast, type RoastRunner, type RoastToolId } from './roast.ts';
 import type { WrappedData, WrappedExtra } from './types.ts';
@@ -175,6 +176,12 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
 
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
   const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
+  // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
+  // projects) is computed from the SAME events as `sessions report` so the two
+  // reconcile exactly — automated eval/tmp runs cost real money and belong in the
+  // total. Junk exclusion is a *content-pass* concern only (content.ts): it keeps
+  // probes/evals out of the fun story (abandoned, drive-bys, word of year,
+  // errors) where report has nothing to compare against and the noise misleads.
   const inRange = events.filter((e) => {
     const d = localDate(e.timestamp, tz);
     return d >= from && d <= to;
@@ -241,38 +248,53 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   // aggregate sorts by cost; the page ranks by tokens — re-sort so bars are
   // monotone. Session counts come from the event pass (distinct per project),
   // never aggregate's sum-of-daily, which double-counts cross-midnight sessions.
+  // On local-model years (no token meter) rank by sessions so the list isn't a
+  // pile of zero-token ties.
+  const projSessions = (label: string, fallback: number): number => ev.sessionsByProject.get(label) ?? fallback;
   const projects = agg.byProject
     .slice()
-    .sort((a, b) => b.tokens - a.tokens)
+    .sort((a, b) =>
+      totalTokens > 0 ? b.tokens - a.tokens : projSessions(b.label, b.sessions) - projSessions(a.label, a.sessions),
+    )
     .slice(0, 5)
     .map((p) => ({
       name: p.label,
       tokens: p.tokens,
       costUSD: p.costUSD,
-      sessions: ev.sessionsByProject.get(p.label) ?? p.sessions,
+      sessions: projSessions(p.label, p.sessions),
       share: totalTokens > 0 ? p.tokens / totalTokens : 0,
     }));
 
-  // aggregate keys byModel by tool|provider|id, so one model reached through
-  // two tools shows up as split rows — merge by model id before ranking.
+  // aggregate keys byModel by tool|provider|id, so one model split across tools —
+  // and across dated snapshots / provider aliases (opus-4-5 vs opus-4-5-20251101
+  // vs openai/gpt-oss-120b) — shows up as several rows. Merge on the canonical
+  // display name so the cast list never lists the same model twice, and drop the
+  // '<synthetic>' sentinel (turns with no real model) entirely.
   const totalMessages = agg.summary.messages;
-  const byModelId = new Map<string, { id: string; label: string; messages: number; tokens: number }>();
+  const byCanon = new Map<string, { id: string; label: string; messages: number; tokens: number }>();
   for (const m of agg.byModel) {
-    const cur = byModelId.get(m.id);
+    if (!isRealModel(m.id)) continue;
+    const key = canonicalModel(m.id);
+    const cur = byCanon.get(key);
     if (cur) {
       cur.messages += m.messages;
       cur.tokens += m.tokens;
     } else {
-      byModelId.set(m.id, { id: m.id, label: m.label, messages: m.messages, tokens: m.tokens });
+      byCanon.set(key, { id: m.id, label: key, messages: m.messages, tokens: m.tokens });
     }
   }
-  const models = [...byModelId.values()]
+  const models = [...byCanon.values()]
     .sort((a, b) => b.messages - a.messages)
     .slice(0, 5)
     .map((m) => {
-      const firsts = ev.modelFirsts.get(m.id);
+      // modelFirsts is keyed by canonical name (compute.ts), so first-seen /
+      // first-top day already pool a model's snapshots.
+      const firsts = ev.modelFirsts.get(m.label);
       return {
-        ...m,
+        id: m.id,
+        label: m.label,
+        messages: m.messages,
+        tokens: m.tokens,
         share: totalMessages > 0 ? m.messages / totalMessages : 0,
         firstSeen: firsts?.firstSeen ?? agg.period.from,
         firstTopDay: firsts?.firstTopDay ?? null,
@@ -280,32 +302,57 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     });
 
   const toolTokens = agg.byTool.reduce((sum, t) => sum + t.tokens, 0);
-  const toolsOut = agg.byTool.map((t) => ({
-    id: t.id,
-    label: t.label,
-    sessions: ev.sessionsByTool.get(t.id) ?? t.sessions,
-    tokens: t.tokens,
-    share: toolTokens > 0 ? t.tokens / toolTokens : 0,
-  }));
+  const toolSessions = agg.byTool.reduce((sum, t) => sum + (ev.sessionsByTool.get(t.id) ?? t.sessions), 0);
+  const toolsOut = agg.byTool.map((t) => {
+    const sessions = ev.sessionsByTool.get(t.id) ?? t.sessions;
+    return {
+      id: t.id,
+      label: t.label,
+      sessions,
+      tokens: t.tokens,
+      // token share normally; session share on local-model years so a used tool
+      // isn't stuck at 0%.
+      share: toolTokens > 0 ? t.tokens / toolTokens : toolSessions > 0 ? sessions / toolSessions : 0,
+    };
+  });
 
   const daily = agg.daily.map((d) => ({ date: d.date, tokens: d.tokens, messages: d.messages }));
   const activeDaily = daily.filter((d) => d.messages > 0);
   let biggestDay: WrappedData['biggestDay'] = null;
   if (activeDaily.length > 0) {
-    const sorted = activeDaily.map((d) => d.tokens).sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const medianTokens = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
-    const peak = activeDaily.reduce((a, b) => (b.tokens > a.tokens ? b : a));
-    biggestDay = { ...peak, medianTokens };
+    const median = (vals: number[]): number => {
+      const s = [...vals].sort((a, b) => a - b);
+      const mid = Math.floor(s.length / 2);
+      return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+    };
+    const medianTokens = median(activeDaily.map((d) => d.tokens));
+    const medianMessages = median(activeDaily.map((d) => d.messages));
+    // Rank by tokens normally; on local-model years (no token meter) rank by
+    // messages so the "biggest day" is still a real day, not a 0-token tie.
+    const peak =
+      totalTokens > 0
+        ? activeDaily.reduce((a, b) => (b.tokens > a.tokens ? b : a))
+        : activeDaily.reduce((a, b) => (b.messages > a.messages ? b : a));
+    biggestDay = { ...peak, medianTokens, medianMessages };
   }
 
   const activeDates = activeDaily.map((d) => d.date);
   const streak = longestStreakRange(activeDates);
   const longestGap = longestGapRange(activeDates);
 
-  const fun = selectFunCards(content, ev.rhythm);
+  const fun = selectFunCards(content, ev.rhythm, {
+    costUSD: agg.summary.totalCostUSD,
+    activeDays: agg.summary.activeDays,
+    modelsTried: ev.modelFirsts.size,
+    cacheHitRate: ev.cacheHitRate,
+  });
   const wordOfYear = selectWordOfYear(content);
-  const persona = selectPersona(ev, projects[0]?.share ?? 0, content);
+  // Focus = concentration on one project. Token share when there's a token meter;
+  // on local-model years fall back to session share so it isn't a false "0%".
+  const topSessionShare =
+    ev.distinctSessions > 0 ? Math.max(0, ...ev.sessionsByProject.values()) / ev.distinctSessions : 0;
+  const focusShare = totalTokens > 0 ? (projects[0]?.share ?? 0) : topSessionShare;
+  const persona = selectPersona(ev, focusShare, content);
 
   const dataBegins = activeDaily[0]?.date ?? null;
 
@@ -333,6 +380,8 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     longestGap,
     projects,
     models,
+    // modelFirsts is canonical-keyed (snapshots/aliases already merged,
+    // '<synthetic>' excluded), so its size is the distinct-models-tried count.
     modelsTried: ev.modelFirsts.size,
     tools: toolsOut,
     cacheHitRate: ev.cacheHitRate,

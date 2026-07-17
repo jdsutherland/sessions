@@ -288,6 +288,64 @@ describe('extractMessages', () => {
     expect(msgs.map((m) => m.index)).toEqual([0, 1]);
     expect(msgs.map((m) => m.index)).toEqual(getSessionMessages(lines).map((m) => m.index));
   });
+
+  test('compaction summaries are not genuine (auto-generated context carryover)', () => {
+    const lines = jsonl({
+      type: 'user',
+      isCompactSummary: true,
+      message: { content: [{ type: 'text', text: 'This session is being continued from a previous conversation…' }] },
+    });
+    const msgs = extractMessages(lines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.genuine).toBe(false);
+  });
+
+  test('tag-wrapped agent/harness injections are stripped, not counted as user turns', () => {
+    const lines = jsonl(
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'text', text: '<task-notification>\n<task-id>abc</task-id>\n</task-notification>' }],
+        },
+      },
+      { type: 'user', message: { content: [{ type: 'text', text: '<bash-input>git status</bash-input>' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: '<bash-stdout>on branch main</bash-stdout>' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: '<teammate-message>ping</teammate-message>' }] } },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    const msgs = extractMessages(lines);
+    // Only the genuine typed turn survives as a user message; the injections are
+    // emptied by stripInjected and so never get a row.
+    expect(msgs.map((m) => m.text)).toEqual(['the real ask']);
+    expect(msgs[0]!.genuine).toBe(true);
+  });
+
+  test('injection tags with attributes are still stripped', () => {
+    const lines = jsonl(
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'text', text: '<teammate-message teammate_id="reviewer" color="blue">ping</teammate-message>' },
+          ],
+        },
+      },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    expect(extractMessages(lines).map((m) => m.text)).toEqual(['the real ask']);
+  });
+
+  test('inline injections are stripped but the human text around them survives', () => {
+    const lines = jsonl({
+      type: 'user',
+      promptSource: 'typed',
+      message: { content: [{ type: 'text', text: 'fix this <bash-stdout>err</bash-stdout> please' }] },
+    });
+    const msgs = extractMessages(lines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.text.replace(/\s+/g, ' ').trim()).toBe('fix this please');
+    expect(msgs[0]!.genuine).toBe(true);
+  });
 });
 
 describe('contentMatches', () => {

@@ -6,6 +6,9 @@ interface JsonLine {
   timestamp?: string;
   gitBranch?: string;
   promptSource?: string | null;
+  /** Claude marks auto-generated context-carryover turns (the "continued from a
+   *  previous conversation" summary written on compaction) with this flag. */
+  isCompactSummary?: boolean;
   message?: Record<string, unknown> | string;
   payload?: Record<string, unknown>;
 }
@@ -83,6 +86,15 @@ function stripInjected(text: string): string {
     /<command-name>[\s\S]*?<\/command-name>/g,
     /<command-message>[\s\S]*?<\/command-message>/g,
     /<command-args>[\s\S]*?<\/command-args>/g,
+    // Agent/harness injections that ride in on a user-role line but are not the
+    // human talking: task-completion pings, `!`-mode shell echoes, teammate relays.
+    // `\b[^>]*` tolerates attributes on the opening tag (e.g. <teammate-message
+    // teammate_id="..." color="...">), which these tags carry in multi-agent logs.
+    /<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g,
+    /<bash-input\b[^>]*>[\s\S]*?<\/bash-input>/g,
+    /<bash-stdout\b[^>]*>[\s\S]*?<\/bash-stdout>/g,
+    /<bash-stderr\b[^>]*>[\s\S]*?<\/bash-stderr>/g,
+    /<teammate-message\b[^>]*>[\s\S]*?<\/teammate-message>/g,
   ];
   for (const p of patterns) {
     text = text.replace(p, '');
@@ -126,18 +138,25 @@ const SKILL_INJECTION_PREAMBLE = /^Base directory for this skill:/;
 
 /**
  * Whether a user-role line is a genuine human turn — not a tool result, a
- * system-injected turn, or a skill body injected as a user message.
- * Claude lines carry `promptSource`: when the field is present, only `typed`
- * and `queued` count (a present-but-null value, as tool results and skill loads
- * have, is rejected). Older logs and pi/codex have no `promptSource`, so fall
- * back to a heuristic: non-empty text that isn't a skill-injection preamble.
+ * system-injected turn, a compaction summary, or a skill body injected as a
+ * user message. The disqualifiers below fire regardless of `promptSource`
+ * because agent/harness injections (compaction carryover, task-completion
+ * pings echoed as `!`-mode shell lines) can arrive with any source.
+ * Claude lines then carry `promptSource`: when the field is present, only
+ * `typed` and `queued` count (a present-but-null value, as tool results and
+ * skill loads have, is rejected). Older logs and pi/codex have no
+ * `promptSource`, so fall back to a heuristic: non-empty text that isn't a
+ * skill-injection preamble. (Tag-wrapped injections — <task-notification>,
+ * <bash-input>, <bash-stdout>, <teammate-message> — are already emptied by
+ * stripInjected upstream, so they never reach here with text.)
  */
 function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
+  if (d.isCompactSummary === true) return false;
+  if (!strippedText) return false;
+  if (SKILL_INJECTION_PREAMBLE.test(strippedText)) return false;
   if ('promptSource' in d) {
     return d.promptSource === 'typed' || d.promptSource === 'queued';
   }
-  if (!strippedText) return false;
-  if (SKILL_INJECTION_PREAMBLE.test(strippedText)) return false;
   return true;
 }
 

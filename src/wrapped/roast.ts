@@ -72,7 +72,7 @@ export function buildRoastPrompt(d: WrappedData): string {
   const digest = JSON.stringify(roastDigest(d), null, 2);
   return `You are the closer at a roast battle, and the target is someone's year of using AI coding agents. Below are their stats (numbers only — no message content).
 
-Write 3-5 short, EDGY roast slides. Be genuinely cutting — sharp, dark, deadpan, a little mean. Land real punches at the absurdity in their numbers; twist the knife. Dry wit and savage one-liners over gentle ribbing. Mild profanity is fine if it lands. The one rule: roast their WORK and these HABITS (the numbers), never protected traits or anything hateful — this is affectionate underneath, like a friend who knows exactly where it hurts. Reference specific figures. No emoji.
+Write 3-5 short, UNHINGED roast slides. Go for the jugular — sharp, dark, deadpan, genuinely mean. Find the most damning number and make it hurt: the 3 AM sessions, the four-figure bill, the drive-bys, the streak that screams "no hobbies." Twist the knife, then twist it again. Savage one-liners, zero gentle ribbing, zero hedging, no "but hey." Profanity is welcome when it lands the punch. The ONLY rule: roast their WORK and these HABITS (the numbers on the page), never protected traits or anything hateful — it's the affection of a friend who knows exactly where it hurts and aims there anyway. Be specific: name the actual figures. No emoji, no clichés, no motivational turn at the end.
 
 Each headline renders as full-screen display type, so brevity IS the punch: a headline over 80 characters gets shrunk to fit and lands soft. Setup-then-twist? Setup in the headline, twist in the subline.
 
