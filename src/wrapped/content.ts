@@ -9,6 +9,7 @@ import type { Database } from 'bun:sqlite';
 import { getIndexDb } from '../cache.ts';
 import { significanceScore, isTrivia, hasArtifact } from '../significance.ts';
 import { resolveProject } from '../report/project.ts';
+import { junkCwdSql } from './exclude.ts';
 import type { PhraseStat, WrappedContentStats, WrappedSessionOfYear } from './types.ts';
 
 /** Index tool names ('claude') differ from report ToolIds ('claude-code'). */
@@ -37,7 +38,7 @@ const PHRASES: PhraseSpec[] = [
   { id: 'assistantApology', role: 'assistant', patterns: ['%apolog%'] },
   { id: 'ultrathink', role: 'user', patterns: ['%ultrathink%'] },
   { id: 'quickQuestion', role: 'user', patterns: ['%quick question%', '%real quick%', '%just a quick%'] },
-  { id: 'oneMoreThing', role: 'user', patterns: ['%one more thing%', '%one last thing%', '%last thing%'] },
+  { id: 'oneMoreThing', role: 'user', patterns: ['%one more thing%', '%one last thing%'] },
   { id: 'shouldWork', role: 'user', patterns: ['%should work%'] },
   {
     id: 'stillBroken',
@@ -74,7 +75,13 @@ const STOPWORDS = new Set(
     'true false null undefined const import export return async await class method methods module script json html css ' +
     'text item items set sets setting settings config options option flag flags default logic implement implementation ' +
     'implemented feature features support supported supports current existing based instead different single multiple ' +
-    'able available actual specific proper properly correct correctly wrong empty missing invalid valid every each'
+    'able available actual specific proper properly correct correctly wrong empty missing invalid valid every each ' +
+    // agent-era plumbing — true of every heavy agent user, so never distinctive.
+    // These are the tools and nouns of the medium itself, not the user's subject,
+    // including the assistant/model names that show up in nearly every transcript.
+    'read write edit grep bash tool tools agent agents subagent skill skills task tasks context summary session ' +
+    'sessions review prompt prompts message messages model models token tokens directory search output plan mode ' +
+    'claude codex opus sonnet haiku gemini anthropic openai full'
   )
     .split(/\s+/)
     .filter(Boolean),
@@ -90,7 +97,16 @@ interface CountRow {
 // win session-of-the-year. The explicit '?' guard documents intent even though
 // lexical comparison already excludes the sentinel. Known skew, disclosed in
 // docs: these are UTC-sliced dates while event stats bucket in local tz.
-const PERIOD_WHERE = `s.created_at >= $from AND s.created_at <= $to AND s.created_at != '?'`;
+//
+// message_count > 0 drops empty sessions (a launched-then-quit shell, or a
+// menu-bar app's health-check probe) — they carry no content but would still
+// count as "drive-bys" and inflate the indexedSessions denominator. junkCwdSql
+// drops automated probe/eval/throwaway sessions that aren't the user's own
+// coding (see exclude.ts). Both apply to every content query, so the per-session
+// tables (drive-bys, abandoned, errors, files, commands) and the FTS censuses
+// (phrases, monologue, vocabulary) all count the same real sessions.
+const PERIOD_WHERE =
+  `s.created_at >= $from AND s.created_at <= $to AND s.created_at != '?' AND s.message_count > 0` + junkCwdSql('s.cwd');
 
 function phraseCounts(db: Database, from: string, to: string, tool: string | null): PhraseStat[] {
   const out: PhraseStat[] = [];
@@ -136,9 +152,15 @@ export function mineWords(
   for (const { text, file } of texts) {
     const words = cleanForMining(text.toLowerCase()).match(/[a-z][a-z'-]{3,}/g);
     if (!words) continue;
+    // Count each word at most once per message. cleanForMining strips fenced/
+    // inline code and paths, but an unfenced log or stack-trace paste still leaks
+    // its vocabulary wholesale — dedup-per-message so one dump can't crown a word
+    // it repeats 200 times. `count` is therefore "messages containing the word".
+    const seen = new Set<string>();
     for (const raw of words) {
       const w = raw.replace(/['-]/g, '');
-      if (w.length < 4 || STOPWORDS.has(w)) continue;
+      if (w.length < 4 || STOPWORDS.has(w) || seen.has(w)) continue;
+      seen.add(w);
       let e = counts.get(w);
       if (!e) {
         e = { count: 0, files: new Set() };
@@ -316,9 +338,13 @@ export async function computeContentStats(opts: ContentOptions): Promise<
       if (c && !PLUMBING.has(c.split(' ')[0]!)) commandCounts.set(c, (commandCounts.get(c) ?? 0) + 1);
     }
 
-    const proj = projectAgg.get(r.cwd);
+    // Key by resolved project (repo), not raw cwd — otherwise a stale worktree
+    // or subdir (…/cli/some-branch) reads as the whole repo being abandoned even
+    // when …/cli/main is active. Repo granularity matches the projects card.
+    const projName = resolveProject(r.cwd);
+    const proj = projectAgg.get(projName);
     if (!proj) {
-      projectAgg.set(r.cwd, { sessions: 1, lastSeen: r.date });
+      projectAgg.set(projName, { sessions: 1, lastSeen: r.date });
     } else {
       proj.sessions++;
       if (r.date > proj.lastSeen) proj.lastSeen = r.date;
@@ -341,10 +367,10 @@ export async function computeContentStats(opts: ContentOptions): Promise<
     .toISOString()
     .slice(0, 10);
   let abandoned: { name: string; sessions: number; lastSeen: string } | null = null;
-  for (const [cwd, agg] of projectAgg) {
+  for (const [name, agg] of projectAgg) {
     if (agg.sessions >= 10 && agg.lastSeen < cutoff) {
       if (!abandoned || agg.sessions > abandoned.sessions) {
-        abandoned = { name: resolveProject(cwd), sessions: agg.sessions, lastSeen: agg.lastSeen };
+        abandoned = { name, sessions: agg.sessions, lastSeen: agg.lastSeen };
       }
     }
   }

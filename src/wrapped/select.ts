@@ -10,6 +10,8 @@ import type { WrappedEventStats } from './compute.ts';
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 const fmtInt = (n: number): string => n.toLocaleString('en-US');
+/** "1 reply" / "2 replies" — never "1 replies". */
+const plural = (n: number, one: string, many = `${one}s`): string => (n === 1 ? one : many);
 
 interface Candidate {
   theme: 'friction' | 'relationship' | 'lies' | 'bloopers';
@@ -61,9 +63,23 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       theme: 'friction',
       score: 0.1 + 0.7 * sat(actually, 200),
       stat: {
+        // LIKE '%actually%' matches anywhere in the message, so the copy can't
+        // claim position ("began with") — it's "contained an actually".
         big: fmtInt(actually),
-        label: 'prompts began with a change of heart — "actually…"',
+        label: 'prompts had second thoughts — "actually…"',
         sub: tryAgain > 0 ? `plus ${fmtInt(tryAgain)} rounds of "try again"` : undefined,
+      },
+    });
+  }
+  const noWait = phrase(p, 'noWait');
+  if (noWait >= 3) {
+    out.push({
+      theme: 'friction',
+      score: 0.2 + 0.6 * sat(noWait, 30),
+      stat: {
+        big: fmtInt(noWait),
+        label: 'hard reverses mid-prompt — "no, wait—"',
+        sub: 'the sound of a plan changing',
       },
     });
   }
@@ -144,9 +160,13 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       theme: 'relationship',
       score: 0.55,
       stat: {
+        // Mean chars/message: the user's is dominated by pastes, not chattiness,
+        // so the copy attributes length to pasting rather than claiming "chattier".
         big: `${fmtInt(m.userAvg)} vs ${fmtInt(m.assistantAvg)}`,
         label: 'characters per message — you vs. Claude',
-        sub: youTalkMore ? 'plot twist: you’re the chatty one (pastes count)' : 'Claude does love a thorough answer',
+        sub: youTalkMore
+          ? 'you paste more than you type — that skews the average'
+          : 'Claude does love a thorough answer',
       },
     });
   }
@@ -294,8 +314,10 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       theme: 'bloopers',
       score: 0.15 + weekendShare,
       stat: {
+        // heat counts assistant replies, not user-authored messages — don't claim
+        // "you sent"; attribute to activity.
         big: `${Math.round(weekendShare * 100)}%`,
-        label: 'of your messages were sent on a weekend',
+        label: 'of the year’s activity happened on a weekend',
         sub: 'the repo doesn’t know what a Saturday is',
       },
     });
@@ -313,7 +335,7 @@ const THEME_META: Record<Candidate['theme'], { kicker: string; title: string }> 
 
 const FOOTNOTES: Record<Candidate['theme'], string> = {
   friction:
-    'errors include any failed command or grep — friction, not disasters · cursed day by session start date (UTC)',
+    'errors = any failed tool call (a denied command, a missing file, a bad API call) — friction, not disasters · cursed day by session start date (UTC)',
   relationship: 'counted from your local transcripts — messages containing each phrase',
   lies: 'counted from your own prompts — messages containing each phrase, in any context',
   bloopers: 'local timestamps, your timezone',
@@ -360,14 +382,14 @@ const FOCUS_THRESHOLD = 0.4;
 const DEPTH_THRESHOLD = 40; // raw indexed message_count median (tool turns included)
 
 const ARCHETYPES: Record<string, { name: string; tagline: string }> = {
-  'night|focus|deep': { name: 'The Midnight Machinist', tagline: 'One project, zero daylight, total immersion.' },
+  'night|focus|deep': { name: 'The Midnight Machinist', tagline: 'One project, mostly after dark, total immersion.' },
   'night|focus|quick': { name: 'The Nocturnal Sniper', tagline: 'In after dark, one clean shot, out.' },
   'night|multi|deep': { name: 'The Moonlit Cartographer', tagline: 'Mapping every repo while the world sleeps.' },
   'night|multi|quick': { name: 'The 3 AM Tinkerer', tagline: 'No project is safe from a small-hours "what if".' },
   'day|focus|deep': { name: 'The Deep-Work Artisan', tagline: 'Long sessions, one obsession, real craft.' },
   'day|focus|quick': { name: 'The Surgical Striker', tagline: 'Precise questions, fast exits, ruthless focus.' },
   'day|multi|deep': { name: 'The Systems Gardener', tagline: 'Tending a dozen codebases until they all bloom.' },
-  'day|multi|quick': { name: 'The Rapid Prototyper', tagline: 'A hundred sparks a week — some catch fire.' },
+  'day|multi|quick': { name: 'The Rapid Prototyper', tagline: 'A new idea every time you sit down — some catch fire.' },
 };
 
 export function selectPersona(
@@ -411,11 +433,13 @@ export function selectPersona(
         lean: topProjectShare >= FOCUS_THRESHOLD ? 'devoted' : 'explorer',
       },
       {
+        // message_count includes tool-loop/subagent turns, so this is "messages",
+        // not conversational "turns" — the honest unit for the raw count.
         label: 'depth',
         value:
           depth !== null
-            ? `${Math.round(depth)} turns per real session`
-            : `${Math.round(events.medianReplies)} replies per session`,
+            ? `${fmtInt(Math.round(depth))} ${plural(Math.round(depth), 'message')} per real session`
+            : `${fmtInt(Math.round(events.medianReplies))} ${plural(Math.round(events.medianReplies), 'reply', 'replies')} per session`,
         lean: deep ? 'marathoner' : 'sprinter',
       },
     ],

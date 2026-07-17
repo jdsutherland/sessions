@@ -7,6 +7,7 @@
 import type { UsageEvent } from '../report/parsers/types.ts';
 import { localDate, localHour } from '../report/parsers/util.ts';
 import { resolveProject } from '../report/project.ts';
+import { isRealModel } from './model-name.ts';
 import type { WrappedLongestSession, WrappedRhythm } from './types.ts';
 
 export interface ModelFirsts {
@@ -28,7 +29,8 @@ export interface WrappedEventStats {
   sessionsByTool: Map<string, number>;
   sessionsByProject: Map<string, number>;
   modelFirsts: Map<string, ModelFirsts>;
-  /** Share of messages in local hours 22-23 and 0-5, 0-1. */
+  /** Share of assistant replies in local hours 22:00–05:59 (22, 23, and 0–5) —
+   *  the persona "clock" axis. Broader than nightsPastMidnight's deep-night 0–4. */
   nightShare: number;
 }
 
@@ -105,18 +107,22 @@ export function computeEventStats(events: UsageEvent[], tz: string): WrappedEven
       if (!s.project) s.project = e.projectPath;
     }
 
-    let models = dayModel.get(date);
-    if (!models) {
-      models = new Map();
-      dayModel.set(date, models);
-    }
-    models.set(e.model, (models.get(e.model) ?? 0) + 1);
+    // '<synthetic>' and other sentinel ids are turns with no real model — they
+    // must never win a day's adoption race or be counted as a model "tried".
+    if (isRealModel(e.model)) {
+      let models = dayModel.get(date);
+      if (!models) {
+        models = new Map();
+        dayModel.set(date, models);
+      }
+      models.set(e.model, (models.get(e.model) ?? 0) + 1);
 
-    const first = modelFirsts.get(e.model);
-    if (!first) {
-      modelFirsts.set(e.model, { firstSeen: date, firstTopDay: null });
-    } else if (date < first.firstSeen) {
-      first.firstSeen = date;
+      const first = modelFirsts.get(e.model);
+      if (!first) {
+        modelFirsts.set(e.model, { firstSeen: date, firstTopDay: null });
+      } else if (date < first.firstSeen) {
+        first.firstSeen = date;
+      }
     }
   }
 

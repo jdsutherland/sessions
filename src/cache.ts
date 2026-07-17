@@ -72,7 +72,10 @@ function getCodexDir(): string {
 // message index, and session_fts slims to its genuinely session-level columns
 // (user_content/assistant_content move out — message text is stored exactly once).
 // The virtual-table shapes change, so getDb drops + rebuilds on a user_version mismatch.
-const SCHEMA_VERSION = 7;
+// v8: message_fts no longer stores compaction summaries or tag-wrapped agent/
+// harness injections (task-notifications, `!`-mode shell echoes, teammate relays)
+// as genuine user turns — see isGenuineUserTurn/stripInjected in parser.ts.
+const SCHEMA_VERSION = 8;
 let _db: Database | null = null;
 
 export function clearCache(): void {

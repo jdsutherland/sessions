@@ -6,11 +6,17 @@
 // zero external requests. JS is textContent-only — never innerHTML.
 
 import type { WrappedData, FunCard, WrappedExtra } from './types.ts';
+import { prettyModel } from './model-name.ts';
+
+// Re-exported so existing importers (and tests) keep resolving prettyModel here.
+export { prettyModel } from './model-name.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 const fmtInt = (n: number): string => n.toLocaleString('en-US');
+/** "1 day" / "2 days" — never "1 days". */
+const plural = (n: number, one: string, many = `${one}s`): string => (n === 1 ? one : many);
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'B';
@@ -58,21 +64,6 @@ const ACCENTS = [
   { name: 'tangerine', c: 'oklch(76% 0.18 50)' },
   { name: 'red', c: 'oklch(68% 0.21 25)' },
 ] as const;
-
-/** "claude-opus-4-8" / "claude-haiku-4-5-20251001" → "Opus 4.8" / "Haiku 4.5";
- *  anything unrecognized keeps its raw id (never invent a name). */
-export function prettyModel(id: string): string {
-  // The minor version is 1-2 digits at a segment boundary — an 8-digit date
-  // suffix (claude-opus-4-20250514) is NOT a minor version.
-  const claude = id.match(/^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?=-|$))?/);
-  if (claude) {
-    const family = claude[1]!.charAt(0).toUpperCase() + claude[1]!.slice(1);
-    return claude[3] ? `${family} ${claude[2]}.${claude[3]}` : `${family} ${claude[2]}`;
-  }
-  const gpt = id.match(/^gpt-([\d.]+)(-\w+)?/);
-  if (gpt) return `GPT-${gpt[1]}${gpt[2] ?? ''}`;
-  return id;
-}
 
 /** Reframe the raw token count as something human — the "minutes listened" move. */
 export function tokenEquivalence(tokens: number): string | null {
@@ -147,33 +138,32 @@ function bigNum(n: number, fmt: 'int' | 'tok' | 'usd'): string {
   return `<div class="big"><span class="n" data-n="${n}" data-fmt="${fmt}">${esc(rendered)}</span></div>`;
 }
 
-function heatmap(heat: number[][]): string {
+// The outline marks the busiest-HOUR column and busiest-DAY row — the same two
+// marginals the caption names — so text and picture never disagree. (An earlier
+// version outlined the single hottest cell, which could sit on a different
+// hour/day than the caption's independently-computed marginals.)
+function heatmap(heat: number[][], peakHour: number, peakWeekday: number): string {
   let max = 0;
-  let maxWd = -1;
-  let maxHour = -1;
   for (let wd = 0; wd < 7; wd++) {
     for (let h = 0; h < 24; h++) {
-      if (heat[wd]![h]! > max) {
-        max = heat[wd]![h]!;
-        maxWd = wd;
-        maxHour = h;
-      }
+      if (heat[wd]![h]! > max) max = heat[wd]![h]!;
     }
   }
   if (max === 0) return '';
   let cells = '';
   for (let wd = 0; wd < 7; wd++) {
-    cells += `<div class="hm-lbl">${DAY_LETTERS[wd]}</div>`;
+    cells += `<div class="hm-lbl${wd === peakWeekday ? ' on' : ''}">${DAY_LETTERS[wd]}</div>`;
     for (let h = 0; h < 24; h++) {
       const v = heat[wd]![h]!;
       const pct = v === 0 ? 0 : Math.round(12 + 78 * Math.sqrt(v / max));
-      const peak = wd === maxWd && h === maxHour ? ' peak' : '';
-      cells += `<div class="hm-cell${peak}" style="--p:${pct}%" data-tip="${esc(`${WEEKDAYS[wd]} ${hourLabel(h)} — ${fmtInt(v)} msgs`)}"></div>`;
+      const band = (wd === peakWeekday ? ' pk-row' : '') + (h === peakHour ? ' pk-col' : '');
+      const peak = wd === peakWeekday && h === peakHour ? ' peak' : '';
+      cells += `<div class="hm-cell${band}${peak}" style="--p:${pct}%" data-tip="${esc(`${WEEKDAYS[wd]} ${hourLabel(h)} — ${fmtInt(v)} ${plural(v, 'reply', 'replies')}`)}"></div>`;
     }
   }
   let hours = '<div></div>';
   for (let h = 0; h < 24; h++) {
-    hours += `<div class="hm-hr">${h % 6 === 0 ? hourLabel(h).replace(' ', '') : ''}</div>`;
+    hours += `<div class="hm-hr${h === peakHour ? ' on' : ''}">${h % 6 === 0 ? hourLabel(h).replace(' ', '') : ''}</div>`;
   }
   return `<div class="scrollx"><div class="hm">${cells}${hours}</div></div>`;
 }
@@ -200,12 +190,12 @@ function streakStrip(daily: { date: string; tokens: number }[], streak: { from: 
   return `<div class="scrollx"><div class="cal">${cells}</div></div>`;
 }
 
-function rankedList(rows: { name: string; value: number; detail: string }[], unit: 'tok' | 'usd'): string {
+function rankedList(rows: { name: string; value: number; detail: string }[], unit: 'tok' | 'usd' | 'count'): string {
   const max = Math.max(1, ...rows.map((r) => r.value));
   return `<ol class="rank">${rows
     .map((r, i) => {
       const pct = ((r.value / max) * 100).toFixed(1);
-      const val = unit === 'usd' ? fmtUSD(r.value) : fmtTokens(r.value);
+      const val = unit === 'usd' ? fmtUSD(r.value) : unit === 'count' ? fmtInt(r.value) : fmtTokens(r.value);
       return `<li style="--i:${rows.length - 1 - i}"><span class="pos">${i + 1}</span><span class="rname">${esc(r.name)}</span><span class="rtrack"><span class="rfill" style="width:${pct}%"></span></span><span class="rval" data-tip="${esc(r.detail)}">${val}</span></li>`;
     })
     .join('')}</ol>`;
@@ -254,28 +244,36 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
   });
 
   if (!empty) {
-    const equiv = tokenEquivalence(d.totals.tokens);
-    cards.push({
-      id: 'tokens',
-      body: `${echo(fmtTokens(d.totals.tokens))}<div class="panel center">${kicker('the year in tokens')}<h2>You and your agents had a lot to say.</h2>${bigNum(d.totals.tokens, 'tok')}<p class="lede">tokens exchanged${equiv ? ` — ${esc(equiv)}` : ''}</p>${foot('input + output + cache writes · same math as sessions report')}</div>`,
-    });
+    // Local-model years (Ollama, gpt-oss, etc.) report no billed tokens. Showing
+    // a hero "0" / "$0" would read as broken, so the token and cost cards only
+    // appear when there's a meter to report — the deck leans on the non-zero
+    // signals (sessions, replies, rhythm, models, persona) instead.
+    if (d.totals.tokens > 0) {
+      const equiv = tokenEquivalence(d.totals.tokens);
+      cards.push({
+        id: 'tokens',
+        body: `${echo(fmtTokens(d.totals.tokens))}<div class="panel center">${kicker('the year in tokens')}<h2>You and your agents had a lot to say.</h2>${bigNum(d.totals.tokens, 'tok')}<p class="lede">tokens exchanged${equiv ? ` — ${esc(equiv)}` : ''}</p>${foot('input + output + cache writes · same math as sessions report')}</div>`,
+      });
+    }
 
-    const cachePct = d.cacheHitRate !== null ? Math.round(d.cacheHitRate * 100) : null;
-    const costEq = costEquivalence(d.totals.costUSD);
-    cards.push({
-      id: 'cost',
-      body: `${echo(fmtUSD(d.totals.costUSD))}<div class="panel center">${kicker('the receipt')}<h2>All of that, à la carte?</h2>${bigNum(d.totals.costUSD, 'usd')}<p class="lede">what this year would have cost at API list prices${costEq ? ` — ${esc(costEq)}` : ''}</p>${
-        cachePct !== null
-          ? `<div class="substat" style="--i:1"><span class="sn">${cachePct}%</span><span class="sl">cache hit rate — ${fmtTokens(d.totals.cacheReadTokens)} tokens re-read from cache instead of full price</span></div>`
-          : ''
-      }${
-        d.warnings.length > 0
-          ? foot(
-              `${d.warnings.length} model(s) had no pricing — the real number is higher: ${d.warnings.map((w) => w.model).join(', ')}`,
-            )
-          : foot('estimated from LiteLLM list prices · cache reads billed at cache rates')
-      }</div>`,
-    });
+    if (d.totals.costUSD > 0) {
+      const cachePct = d.cacheHitRate !== null ? Math.round(d.cacheHitRate * 100) : null;
+      const costEq = costEquivalence(d.totals.costUSD);
+      cards.push({
+        id: 'cost',
+        body: `${echo(fmtUSD(d.totals.costUSD))}<div class="panel center">${kicker('the receipt')}<h2>All of that, à la carte?</h2>${bigNum(d.totals.costUSD, 'usd')}<p class="lede">what this year would have cost at API list prices${costEq ? ` — ${esc(costEq)}` : ''}</p>${
+          cachePct !== null
+            ? `<div class="substat" style="--i:1"><span class="sn">${cachePct}%</span><span class="sl">cache hit rate — ${fmtTokens(d.totals.cacheReadTokens)} tokens re-read from cache instead of full price</span></div>`
+            : ''
+        }${
+          d.warnings.length > 0
+            ? foot(
+                `${d.warnings.length} model(s) had no pricing — the real number is higher: ${d.warnings.map((w) => w.model).join(', ')}`,
+              )
+            : foot('estimated from LiteLLM list prices · cache reads billed at cache rates')
+        }</div>`,
+      });
+    }
 
     const streak = d.totals.longestStreak;
     cards.push({
@@ -287,32 +285,35 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
 <div class="stat" style="--i:2"><span class="n" data-n="${d.totals.activeDays}" data-fmt="int">${fmtInt(d.totals.activeDays)}</span><span class="l">active days</span></div>
 </div>
 ${streakStrip(d.daily, streak ? { from: streak.from, to: streak.to } : null)}
-${streak ? `<p class="lede">longest streak: <b>${streak.days} days</b> <em>(${esc(shortDate(streak.from))} – ${esc(shortDate(streak.to))})</em></p>` : ''}
+${streak ? `<p class="lede">longest streak: <b>${streak.days} ${plural(streak.days, 'day')}</b> <em>(${esc(shortDate(streak.from))} – ${esc(shortDate(streak.to))})</em></p>` : ''}
 </div>`,
     });
 
     cards.push({
       id: 'rhythm',
       body: `<div class="panel">${kicker('your rhythm')}<h2>You have a witching hour.</h2>
-${heatmap(d.rhythm.heat)}
-<p class="lede">peak: <b>${esc(hourLabel(d.rhythm.peakHour))}</b> on <b>${esc(WEEKDAYS[d.rhythm.peakWeekday]!)}s</b>${
+${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
+<p class="lede">busiest hour: <b>${esc(hourLabel(d.rhythm.peakHour))}</b> · busiest day: <b>${esc(WEEKDAYS[d.rhythm.peakWeekday]!)}s</b>${
         d.rhythm.nightsPastMidnight > 0
-          ? ` <em>· past midnight on ${fmtInt(d.rhythm.nightsPastMidnight)} nights</em>`
+          ? ` <em>· past midnight on ${fmtInt(d.rhythm.nightsPastMidnight)} ${plural(d.rhythm.nightsPastMidnight, 'night')}</em>`
           : ''
-      }</p>${foot(`local time (${d.tz})`)}</div>`,
+      }</p>${foot(`local time (${d.tz}) · busiest hour and day are counted separately`)}</div>`,
     });
 
     if (d.projects.length > 0) {
       const topShare = Math.round((d.projects[0]?.share ?? 0) * 100);
+      const byTokens = d.totals.tokens > 0;
       cards.push({
         id: 'projects',
         body: `<div class="panel">${kicker('the obsessions')}<h2>Where the year actually went.</h2>${rankedList(
           d.projects.map((p) => ({
             name: p.name,
-            value: p.tokens,
-            detail: `${fmtInt(p.sessions)} sessions · ${fmtUSD(p.costUSD)}`,
+            value: byTokens ? p.tokens : p.sessions,
+            detail: byTokens
+              ? `${fmtInt(p.sessions)} ${plural(p.sessions, 'session')} · ${fmtUSD(p.costUSD)}`
+              : `${fmtInt(p.sessions)} ${plural(p.sessions, 'session')}`,
           })),
-          'tok',
+          byTokens ? 'tok' : 'count',
         )}${topShare >= 25 ? `<p class="lede"><b>${esc(d.projects[0]!.name)}</b> alone ate <b>${topShare}%</b> of everything.</p>` : ''}</div>`,
       });
     }
@@ -331,9 +332,14 @@ ${heatmap(d.rhythm.heat)}
       const story = newest
         ? `<p class="lede"><b>${esc(prettyModel(newest.label))}</b> arrived <b>${esc(shortDate(newest.firstSeen))}</b> — ${takeover}. ${newest.id === d.models[0]!.id ? 'It never looked back.' : 'The old guard held on.'}</p>`
         : '';
+      // A tool you actually used must never read "0%": floor sub-1% shares to "<1%".
+      const sharePct = (share: number): string => {
+        const p = Math.round(share * 100);
+        return share > 0 && p < 1 ? '<1%' : `${p}%`;
+      };
       const toolStrip =
         d.tools.length > 1
-          ? `<div class="pills">${d.tools.map((t) => `<span class="pill">${esc(t.label)} ${Math.round(t.share * 100)}%</span>`).join('')}</div>`
+          ? `<div class="pills">${d.tools.map((t) => `<span class="pill">${esc(t.label)} ${sharePct(t.share)}</span>`).join('')}</div>`
           : '';
       cards.push({
         id: 'models',
@@ -343,7 +349,7 @@ ${heatmap(d.rhythm.heat)}
             value: m.messages,
             detail: `${fmtTokens(m.tokens)} tokens · first seen ${shortDate(m.firstSeen)}`,
           })),
-          'tok',
+          'count',
         )}${story}${toolStrip}${foot(
           `ranked by replies · bars show reply volume${
             d.modelsTried > d.models.length
@@ -355,10 +361,17 @@ ${heatmap(d.rhythm.heat)}
     }
 
     if (d.biggestDay) {
-      const ratio = d.biggestDay.medianTokens > 0 ? d.biggestDay.tokens / d.biggestDay.medianTokens : 0;
+      // Show tokens normally; on local-model years (no token meter) show messages
+      // so the card is a real day, not a giant "0".
+      const bd = d.biggestDay;
+      const byTokens = bd.tokens > 0;
+      const value = byTokens ? bd.tokens : bd.messages;
+      const median = byTokens ? bd.medianTokens : bd.medianMessages;
+      const noun = byTokens ? 'tokens' : 'messages';
+      const ratio = median > 0 ? value / median : 0;
       cards.push({
         id: 'bigday',
-        body: `${echo(shortDate(d.biggestDay.date))}<div class="panel center">${kicker('the bender')}<h2>Then there was ${esc(formatDate(d.biggestDay.date))}.</h2>${bigNum(d.biggestDay.tokens, 'tok')}<p class="lede">tokens in a single day${
+        body: `${echo(shortDate(bd.date))}<div class="panel center">${kicker('the bender')}<h2>Then there was ${esc(formatDate(bd.date))}.</h2>${bigNum(value, byTokens ? 'tok' : 'int')}<p class="lede">${noun} in a single day${
           ratio >= 2 ? ` — <b>${ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1)}×</b> your median day` : ''
         }</p></div>`,
       });
@@ -379,11 +392,11 @@ ${heatmap(d.rhythm.heat)}
         id: 'magnum',
         body: `<div class="panel">${kicker('your magnum opus')}${
           soy
-            ? `<h2>“${esc(soy.title)}”</h2><p class="lede">${esc(formatDate(soy.date))} · <b>${esc(soy.project)}</b> · ${fmtInt(soy.messageCount)} messages · ${fmtInt(soy.filesTouched)} files${soy.shipped ? ' · <span class="badge">shipped</span>' : ''}</p>`
+            ? `<h2>“${esc(soy.title)}”</h2><p class="lede">${esc(formatDate(soy.date))} · <b>${esc(soy.project)}</b> · ${fmtInt(soy.messageCount)} ${plural(soy.messageCount, 'message')} · ${fmtInt(soy.filesTouched)} ${plural(soy.filesTouched, 'file')}${soy.shipped ? ' · <span class="badge">shipped</span>' : ''}</p>`
             : ''
         }${
           ls
-            ? `<div class="substat" style="--i:1"><span class="sn">${esc(fmtDuration(ls.durationMs))}</span><span class="sl">your longest sitting — ${fmtInt(ls.replies)} replies, ${esc(formatDate(ls.date))}, ${esc(ls.project)}</span></div>`
+            ? `<div class="substat" style="--i:1"><span class="sn">${esc(fmtDuration(ls.durationMs))}</span><span class="sl">your longest sitting — ${fmtInt(ls.replies)} ${plural(ls.replies, 'reply', 'replies')}, ${esc(formatDate(ls.date))}, ${esc(ls.project)}</span></div>`
             : ''
         }${soy ? foot('ranked by substance: message volume, files edited, and whether something shipped') : ''}</div>`,
       });
@@ -395,7 +408,7 @@ ${heatmap(d.rhythm.heat)}
       const w = d.wordOfYear;
       cards.push({
         id: 'word',
-        body: `${echo(w.word)}<div class="panel center">${kicker('your word of the year')}<div class="big bigword"><span class="n">${esc(w.word)}</span></div><p class="lede">typed <b>${fmtInt(w.count)}</b> times across <b>${fmtInt(w.sessions)}</b> sessions</p>${
+        body: `${echo(w.word)}<div class="panel center">${kicker('your word of the year')}<div class="big bigword"><span class="n">${esc(w.word)}</span></div><p class="lede">in <b>${fmtInt(w.count)}</b> of your ${plural(w.count, 'message')} across <b>${fmtInt(w.sessions)}</b> ${plural(w.sessions, 'session')}</p>${
           w.runnersUp.length > 0 ? `<p class="lede"><em>also in rotation: ${esc(w.runnersUp.join(', '))}</em></p>` : ''
         }${foot('mined from your own prompts · common words excluded')}</div>`,
       });
@@ -431,10 +444,8 @@ ${foot('a description of how you worked this year, not who you are · this card 
   if (d.models[0]) creditRows.push(['starring', prettyModel(d.models[0].label)]);
   if (d.models[1]) creditRows.push(['the understudy', prettyModel(d.models[1].label)]);
   if (d.content?.topCommands[0]) {
-    creditRows.push([
-      'featuring',
-      `${d.content.topCommands[0].name} (${fmtInt(d.content.topCommands[0].sessions)} sessions)`,
-    ]);
+    const tc = d.content.topCommands[0];
+    creditRows.push(['featuring', `${tc.name} (${fmtInt(tc.sessions)} ${plural(tc.sessions, 'session')})`]);
   }
   if (d.projects[0]) creditRows.push(['on location', d.projects[0].name]);
   if (d.content?.topFiles[0]) creditRows.push(['set dressing', d.content.topFiles[0].name]);
@@ -455,7 +466,8 @@ ${foot('a description of how you worked this year, not who you are · this card 
     ]);
   }
   if (d.content?.errors && d.content.errors.totalErrors > 0) {
-    creditRows.push(['stunts', `${fmtInt(d.content.errors.totalErrors)} errors, all survived`]);
+    const n = d.content.errors.totalErrors;
+    creditRows.push(['stunts', `${fmtInt(n)} ${plural(n, 'error')}, all survived`]);
   }
   if (d.content?.abandoned) {
     creditRows.push([
@@ -550,7 +562,9 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .hm-lbl,.hm-hr{font-family:var(--mono);font-size:9.5px;color:var(--faint);display:flex;align-items:center;}
 .hm-hr{justify-content:flex-start;}
 .hm-cell{aspect-ratio:1;border-radius:2px;background:color-mix(in oklch,var(--a) var(--p),oklch(20% 0.01 280));}
+.hm-cell.pk-row,.hm-cell.pk-col{box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--ink) 30%,transparent);}
 .hm-cell.peak{outline:2px solid var(--ink);outline-offset:-1px;}
+.hm-lbl.on,.hm-hr.on{color:var(--a);font-weight:700;}
 .cal{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,10px);gap:3px;width:max-content;}
 .cal-cell{width:10px;height:10px;border-radius:2px;background:color-mix(in oklch,var(--a) var(--p),oklch(20% 0.01 280));}
 .cal-cell.streak{outline:1.5px solid var(--ink);outline-offset:-1px;}
