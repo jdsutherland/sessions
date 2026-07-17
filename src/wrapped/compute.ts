@@ -7,7 +7,7 @@
 import type { UsageEvent } from '../report/parsers/types.ts';
 import { localDate, localHour } from '../report/parsers/util.ts';
 import { resolveProject } from '../report/project.ts';
-import { isRealModel } from './model-name.ts';
+import { isRealModel, canonicalModel } from './model-name.ts';
 import type { WrappedLongestSession, WrappedRhythm } from './types.ts';
 
 export interface ModelFirsts {
@@ -28,6 +28,8 @@ export interface WrappedEventStats {
    *  double-count cross-midnight sessions, so wrapped never uses them. */
   sessionsByTool: Map<string, number>;
   sessionsByProject: Map<string, number>;
+  /** Keyed by canonical display name (snapshots/aliases merged; sentinels excluded),
+   *  so `.size` is the distinct-models-tried count and adoption dates pool variants. */
   modelFirsts: Map<string, ModelFirsts>;
   /** Share of assistant replies in local hours 22:00–05:59 (22, 23, and 0–5) —
    *  the persona "clock" axis. Broader than nightsPastMidnight's deep-night 0–4. */
@@ -109,17 +111,22 @@ export function computeEventStats(events: UsageEvent[], tz: string): WrappedEven
 
     // '<synthetic>' and other sentinel ids are turns with no real model — they
     // must never win a day's adoption race or be counted as a model "tried".
+    // Track by canonical name so dated snapshots / provider aliases of one model
+    // pool their votes (otherwise a split model loses the daily race to an
+    // unsplit one and never earns a firstTopDay), and modelFirsts is keyed the
+    // same way the cast list and modelsTried count it.
     if (isRealModel(e.model)) {
+      const canon = canonicalModel(e.model);
       let models = dayModel.get(date);
       if (!models) {
         models = new Map();
         dayModel.set(date, models);
       }
-      models.set(e.model, (models.get(e.model) ?? 0) + 1);
+      models.set(canon, (models.get(canon) ?? 0) + 1);
 
-      const first = modelFirsts.get(e.model);
+      const first = modelFirsts.get(canon);
       if (!first) {
-        modelFirsts.set(e.model, { firstSeen: date, firstTopDay: null });
+        modelFirsts.set(canon, { firstSeen: date, firstTopDay: null });
       } else if (date < first.firstSeen) {
         first.firstSeen = date;
       }

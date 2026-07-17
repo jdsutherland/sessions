@@ -273,6 +273,14 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
             : foot('estimated from LiteLLM list prices · cache reads billed at cache rates')
         }</div>`,
       });
+    } else if (d.totals.tokens > 0 && d.warnings.length > 0) {
+      // Metered tokens but every model was unpriced → cost is 0 not because it
+      // was free but because we couldn't price it. Surface that instead of
+      // silently dropping the warning with the (hidden) $0 receipt card.
+      cards.push({
+        id: 'cost',
+        body: `<div class="panel center">${kicker('the receipt')}<h2>No price tag this year.</h2><p class="lede">cost couldn’t be estimated — ${d.warnings.length} model(s) had no list price</p>${foot(`unpriced: ${d.warnings.map((w) => w.model).join(', ')}`)}</div>`,
+      });
     }
 
     const streak = d.totals.longestStreak;

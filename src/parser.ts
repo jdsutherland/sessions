@@ -88,11 +88,13 @@ function stripInjected(text: string): string {
     /<command-args>[\s\S]*?<\/command-args>/g,
     // Agent/harness injections that ride in on a user-role line but are not the
     // human talking: task-completion pings, `!`-mode shell echoes, teammate relays.
-    /<task-notification>[\s\S]*?<\/task-notification>/g,
-    /<bash-input>[\s\S]*?<\/bash-input>/g,
-    /<bash-stdout>[\s\S]*?<\/bash-stdout>/g,
-    /<bash-stderr>[\s\S]*?<\/bash-stderr>/g,
-    /<teammate-message>[\s\S]*?<\/teammate-message>/g,
+    // `\b[^>]*` tolerates attributes on the opening tag (e.g. <teammate-message
+    // teammate_id="..." color="...">), which these tags carry in multi-agent logs.
+    /<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g,
+    /<bash-input\b[^>]*>[\s\S]*?<\/bash-input>/g,
+    /<bash-stdout\b[^>]*>[\s\S]*?<\/bash-stdout>/g,
+    /<bash-stderr\b[^>]*>[\s\S]*?<\/bash-stderr>/g,
+    /<teammate-message\b[^>]*>[\s\S]*?<\/teammate-message>/g,
   ];
   for (const p of patterns) {
     text = text.replace(p, '');

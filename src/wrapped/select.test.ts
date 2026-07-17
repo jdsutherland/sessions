@@ -208,6 +208,7 @@ describe('display helpers', () => {
     // and collapse to the same canonical name so snapshot variants merge.
     expect(prettyModel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
     expect(prettyModel('claude-opus-4-8:thinking')).toBe('Opus 4.8');
+    expect(prettyModel('claude-opus-4-8[1m]:thinking')).toBe('Opus 4.8'); // both suffixes, any order
     expect(prettyModel('anthropic/claude-opus-4-8')).toBe('Opus 4.8');
     expect(prettyModel('openai/gpt-oss-120b')).toBe('gpt-oss-120b');
     expect(prettyModel('claude-opus-4-5-20251101')).toBe(prettyModel('claude-opus-4-5'));

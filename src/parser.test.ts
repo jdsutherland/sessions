@@ -320,6 +320,19 @@ describe('extractMessages', () => {
     expect(msgs[0]!.genuine).toBe(true);
   });
 
+  test('injection tags with attributes are still stripped', () => {
+    const lines = jsonl(
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'text', text: '<teammate-message teammate_id="reviewer" color="blue">ping</teammate-message>' }],
+        },
+      },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    expect(extractMessages(lines).map((m) => m.text)).toEqual(['the real ask']);
+  });
+
   test('inline injections are stripped but the human text around them survives', () => {
     const lines = jsonl({
       type: 'user',

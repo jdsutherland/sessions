@@ -42,6 +42,13 @@ describe('model canonicalization', () => {
     expect(canonicalModel('openai/gpt-oss-120b')).toBe(canonicalModel('gpt-oss-120b'));
     expect(canonicalModel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
   });
+
+  test('GPT variants keep their full suffix — no drop or over-merge', () => {
+    expect(canonicalModel('gpt-4o')).toBe('GPT-4o'); // not "GPT-4"
+    expect(canonicalModel('gpt-5.1-codex-max')).not.toBe(canonicalModel('gpt-5.1-codex-mini'));
+    expect(canonicalModel('gpt-5.1-codex-max')).toBe('GPT-5.1-codex-max');
+    expect(canonicalModel('gpt-5')).toBe('GPT-5');
+  });
 });
 
 describe('mineWords paste-proofing', () => {
@@ -78,7 +85,23 @@ describe('computeEventStats model tracking', () => {
       [ev('<synthetic>', '2026-01-01T12:00:00Z'), ev('claude-opus-4-8', '2026-01-01T13:00:00Z')],
       'UTC',
     );
-    expect([...stats.modelFirsts.keys()]).toEqual(['claude-opus-4-8']);
+    // modelFirsts is keyed by canonical display name; synthetic is excluded.
+    expect([...stats.modelFirsts.keys()]).toEqual(['Opus 4.8']);
     expect(stats.modelFirsts.has('<synthetic>')).toBe(false);
+  });
+
+  test('snapshots pool their daily-leader vote so the merged model earns firstTopDay', () => {
+    // 2 opus replies (split across a dated snapshot) vs 1 sonnet reply on the same
+    // day → canonical Opus (2) wins; without pooling each opus variant (1) would tie/lose.
+    const stats = computeEventStats(
+      [
+        ev('claude-opus-4-5', '2026-02-01T10:00:00Z'),
+        ev('claude-opus-4-5-20251101', '2026-02-01T11:00:00Z'),
+        ev('claude-sonnet-4-6', '2026-02-01T12:00:00Z'),
+      ],
+      'UTC',
+    );
+    expect(stats.modelFirsts.get('Opus 4.5')?.firstTopDay).toBe('2026-02-01');
+    expect(stats.modelFirsts.get('Sonnet 4.6')?.firstTopDay).toBeNull();
   });
 });

@@ -270,7 +270,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   // display name so the cast list never lists the same model twice, and drop the
   // '<synthetic>' sentinel (turns with no real model) entirely.
   const totalMessages = agg.summary.messages;
-  const byCanon = new Map<string, { id: string; label: string; messages: number; tokens: number; ids: Set<string> }>();
+  const byCanon = new Map<string, { id: string; label: string; messages: number; tokens: number }>();
   for (const m of agg.byModel) {
     if (!isRealModel(m.id)) continue;
     const key = canonicalModel(m.id);
@@ -278,32 +278,25 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     if (cur) {
       cur.messages += m.messages;
       cur.tokens += m.tokens;
-      cur.ids.add(m.id);
     } else {
-      byCanon.set(key, { id: m.id, label: key, messages: m.messages, tokens: m.tokens, ids: new Set([m.id]) });
+      byCanon.set(key, { id: m.id, label: key, messages: m.messages, tokens: m.tokens });
     }
   }
   const models = [...byCanon.values()]
     .sort((a, b) => b.messages - a.messages)
     .slice(0, 5)
     .map((m) => {
-      // Earliest first-seen / first-top day across all snapshots of this model.
-      let firstSeen: string | null = null;
-      let firstTopDay: string | null = null;
-      for (const id of m.ids) {
-        const f = ev.modelFirsts.get(id);
-        if (!f) continue;
-        if (!firstSeen || f.firstSeen < firstSeen) firstSeen = f.firstSeen;
-        if (f.firstTopDay && (!firstTopDay || f.firstTopDay < firstTopDay)) firstTopDay = f.firstTopDay;
-      }
+      // modelFirsts is keyed by canonical name (compute.ts), so first-seen /
+      // first-top day already pool a model's snapshots.
+      const firsts = ev.modelFirsts.get(m.label);
       return {
         id: m.id,
         label: m.label,
         messages: m.messages,
         tokens: m.tokens,
         share: totalMessages > 0 ? m.messages / totalMessages : 0,
-        firstSeen: firstSeen ?? agg.period.from,
-        firstTopDay,
+        firstSeen: firsts?.firstSeen ?? agg.period.from,
+        firstTopDay: firsts?.firstTopDay ?? null,
       };
     });
 
@@ -381,9 +374,9 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     longestGap,
     projects,
     models,
-    // Distinct models by display name — snapshots (opus-4-5 vs opus-4-5-20251101)
-    // and provider-prefixed aliases collapse; '<synthetic>' is already excluded.
-    modelsTried: new Set([...ev.modelFirsts.keys()].map(canonicalModel)).size,
+    // modelFirsts is canonical-keyed (snapshots/aliases already merged,
+    // '<synthetic>' excluded), so its size is the distinct-models-tried count.
+    modelsTried: ev.modelFirsts.size,
     tools: toolsOut,
     cacheHitRate: ev.cacheHitRate,
     longestSession: ev.longestSession,

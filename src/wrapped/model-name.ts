@@ -9,11 +9,16 @@
 
 /** Strip provider prefix + context-window/tier suffixes so matching sees the bare id. */
 function normalizeModelId(id: string): string {
-  return id
-    .replace(/^[a-z0-9.-]+\//i, '') // provider/ prefix: openai/, anthropic/, moonshotai/
-    .replace(/\[[^\]]*\]$/, '') // [1m] context-window marker
-    .replace(/:[^:]*$/, '') // :thinking / :tier suffix
-    .trim();
+  let s = id.replace(/^[a-z0-9.-]+\//i, ''); // provider/ prefix: openai/, anthropic/, moonshotai/
+  // Strip trailing [context-window] and :tier markers, repeatedly and in any
+  // order — "claude-opus-4-8[1m]:thinking" must reduce to "claude-opus-4-8",
+  // not leave "[1m]" stranded and drop the minor version.
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/\[[^\]]*\]$/, '').replace(/:[^:]*$/, '');
+  } while (s !== prev);
+  return s.trim();
 }
 
 /** "claude-opus-4-8" → "Opus 4.8"; "claude-haiku-4-5-20251001" → "Haiku 4.5";
@@ -28,8 +33,11 @@ export function prettyModel(id: string): string {
     const family = claude[1]!.charAt(0).toUpperCase() + claude[1]!.slice(1);
     return claude[3] ? `${family} ${claude[2]}.${claude[3]}` : `${family} ${claude[2]}`;
   }
-  const gpt = norm.match(/^gpt-([\d.]+)(-\w+)?/);
-  if (gpt) return `GPT-${gpt[1]}${gpt[2] ?? ''}`;
+  // Keep the WHOLE tail after the version, not just one hyphen-segment: otherwise
+  // "gpt-4o" → "GPT-4" (drops the o) and "gpt-5.1-codex-max"/"…-mini" both collapse
+  // to "GPT-5.1-codex". Anchored to end so distinct variants stay distinct.
+  const gpt = norm.match(/^gpt-([\d.]+)(.*)$/);
+  if (gpt) return `GPT-${gpt[1]}${gpt[2]}`;
   return norm;
 }
 
