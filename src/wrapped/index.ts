@@ -18,7 +18,6 @@ import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
 import { canonicalModel, isRealModel } from './model-name.ts';
-import { isJunkCwd } from './exclude.ts';
 import { coerceExtras } from './extras.ts';
 import { runRoast, type RoastRunner, type RoastToolId } from './roast.ts';
 import type { WrappedData, WrappedExtra } from './types.ts';
@@ -177,11 +176,13 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
 
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
   const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
-  // Drop automated probe/eval/throwaway sessions before anything else — they're
-  // not the user's coding year and would inflate totals, rhythm, and streaks
-  // (content.ts applies the same isJunkCwd rule on the index side).
+  // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
+  // projects) is computed from the SAME events as `sessions report` so the two
+  // reconcile exactly — automated eval/tmp runs cost real money and belong in the
+  // total. Junk exclusion is a *content-pass* concern only (content.ts): it keeps
+  // probes/evals out of the fun story (abandoned, drive-bys, word of year,
+  // errors) where report has nothing to compare against and the noise misleads.
   const inRange = events.filter((e) => {
-    if (isJunkCwd(e.projectPath)) return false;
     const d = localDate(e.timestamp, tz);
     return d >= from && d <= to;
   });

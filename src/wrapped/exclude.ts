@@ -6,11 +6,11 @@
 // code, yet both inflate session counts, flood the error census, and seed bogus
 // superlatives ("990 sessions of love, then silence" for a health-check probe).
 //
-// This is wrapped-only: `sessions report` and search still see everything, because
-// you might genuinely want to *find* that eval run. Wrapped is a story about you.
-//
-// Defined once as substring/prefix rules so the event pass (a JS filter over
-// UsageEvents) and the content pass (a SQLite WHERE over the index) can't drift.
+// This applies to wrapped's CONTENT pass only (the fun story: abandoned projects,
+// drive-bys, word of the year, errors). The spend/volume headline (tokens, cost,
+// sessions, rhythm) is deliberately NOT filtered — it must reconcile with
+// `sessions report`, and automated eval runs still cost real money. `report` and
+// search also see everything, because you might genuinely want to *find* that run.
 
 /** Substring the cwd must NOT contain. */
 const JUNK_SUBSTRINGS = [
