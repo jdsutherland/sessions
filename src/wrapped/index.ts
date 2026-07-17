@@ -340,7 +340,12 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   const streak = longestStreakRange(activeDates);
   const longestGap = longestGapRange(activeDates);
 
-  const fun = selectFunCards(content, ev.rhythm);
+  const fun = selectFunCards(content, ev.rhythm, {
+    costUSD: agg.summary.totalCostUSD,
+    activeDays: agg.summary.activeDays,
+    modelsTried: ev.modelFirsts.size,
+    cacheHitRate: ev.cacheHitRate,
+  });
   const wordOfYear = selectWordOfYear(content);
   // Focus = concentration on one project. Token share when there's a token meter;
   // on local-model years fall back to session share so it isn't a false "0%".

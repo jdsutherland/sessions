@@ -19,6 +19,16 @@ interface Candidate {
   stat: FunStat;
 }
 
+/** Headline totals the fun cards can mine for savage angles beyond the index. */
+export interface FunExtras {
+  costUSD: number;
+  activeDays: number;
+  modelsTried: number;
+  cacheHitRate: number | null;
+}
+
+const fmtUSD = (n: number): string => '$' + Math.round(n).toLocaleString('en-US');
+
 function phrase(phrases: PhraseStat[], id: string): number {
   return phrases.find((p) => p.id === id)?.count ?? 0;
 }
@@ -28,7 +38,11 @@ function sat(count: number, mid: number): number {
   return count <= 0 ? 0 : 1 - Math.exp(-count / mid);
 }
 
-export function buildCandidates(content: WrappedContentStats | null, rhythm: WrappedRhythm): Candidate[] {
+export function buildCandidates(
+  content: WrappedContentStats | null,
+  rhythm: WrappedRhythm,
+  extras?: FunExtras,
+): Candidate[] {
   const out: Candidate[] = [];
   const p = content?.phrases ?? [];
 
@@ -107,7 +121,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(stillBroken),
         label: '“still broken” status reports filed',
-        sub: 'same error, new hope',
+        sub: 'same error, same fix, renewed optimism',
       },
     });
   }
@@ -206,7 +220,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(perfect),
         label: 'times Claude declared “Perfect!”',
-        sub: 'grade pending independent verification',
+        sub: 'we’ll be the judge of that',
       },
     });
   }
@@ -244,7 +258,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(oneMore),
         label: 'rounds of “one more thing”',
-        sub: 'there is always one more thing',
+        sub: 'it was never just one more thing',
       },
     });
   }
@@ -327,6 +341,47 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
     });
   }
 
+  // — headline-derived savagery (only when the totals are passed in) —
+  if (extras) {
+    // The daily burn rate — a running meter is scarier than one big total.
+    if (extras.costUSD > 0 && extras.activeDays > 0) {
+      const perDay = extras.costUSD / extras.activeDays;
+      out.push({
+        theme: 'bloopers',
+        score: 0.35 + 0.5 * sat(perDay, 40),
+        stat: {
+          big: fmtUSD(perDay),
+          label: 'torched per active day, on average',
+          sub: `${fmtUSD(extras.costUSD)} all year — and you'd do it again tomorrow`,
+        },
+      });
+    }
+    // Model rotation — commitment issues, quantified.
+    if (extras.modelsTried >= 4) {
+      out.push({
+        theme: 'relationship',
+        score: 0.35 + 0.4 * sat(extras.modelsTried, 12),
+        stat: {
+          big: fmtInt(extras.modelsTried),
+          label: 'models you kept in rotation this year',
+          sub: 'monogamy was never really on the table',
+        },
+      });
+    }
+    // Cache reads are replayed context, not new thinking — the honest, brutal framing.
+    if (extras.cacheHitRate !== null && extras.cacheHitRate >= 0.8) {
+      out.push({
+        theme: 'bloopers',
+        score: 0.25 + 0.45 * extras.cacheHitRate,
+        stat: {
+          big: `${Math.round(extras.cacheHitRate * 100)}%`,
+          label: 'of your token bill was re-reading context you’d already sent',
+          sub: 'you don’t have conversations, you have reruns',
+        },
+      });
+    }
+  }
+
   return out;
 }
 
@@ -342,13 +397,17 @@ const FOOTNOTES: Record<Candidate['theme'], string> = {
     'errors = any failed tool call (a denied command, a missing file, a bad API call) — friction, not disasters · cursed day by session start date (UTC)',
   relationship: 'counted from your local transcripts — messages containing each phrase',
   lies: 'counted from your own prompts — messages containing each phrase, in any context',
-  bloopers: 'local timestamps, your timezone',
+  bloopers: 'all counted locally from your own transcripts and usage',
 };
 
 /** Assemble themed cards from the highest-scoring candidates. A card renders
  *  only when its lead stat clears the bar — thresholds, not quotas. */
-export function selectFunCards(content: WrappedContentStats | null, rhythm: WrappedRhythm): FunCard[] {
-  const candidates = buildCandidates(content, rhythm);
+export function selectFunCards(
+  content: WrappedContentStats | null,
+  rhythm: WrappedRhythm,
+  extras?: FunExtras,
+): FunCard[] {
+  const candidates = buildCandidates(content, rhythm, extras);
   const cards: FunCard[] = [];
   for (const theme of ['friction', 'relationship', 'lies', 'bloopers'] as const) {
     const pool = candidates

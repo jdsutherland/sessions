@@ -125,6 +125,31 @@ describe('dynamic selection', () => {
     expect(buildCandidates(null, quietRhythm).some((c) => c.stat.label.includes('weekend'))).toBe(false);
   });
 
+  test('headline extras add savage stats only when passed and above threshold', () => {
+    const withExtras = buildCandidates(null, quietRhythm, {
+      costUSD: 14000,
+      activeDays: 167,
+      modelsTried: 17,
+      cacheHitRate: 0.94,
+    });
+    expect(withExtras.find((c) => c.stat.label.includes('per active day'))?.stat.big).toBe('$84');
+    expect(withExtras.find((c) => c.stat.label.includes('models you kept in rotation'))?.stat.big).toBe('17');
+    expect(withExtras.find((c) => c.stat.label.includes('re-reading context'))?.stat.big).toBe('94%');
+    // Without extras, none of these appear.
+    const none = buildCandidates(null, quietRhythm);
+    expect(none.some((c) => c.stat.label.includes('per active day'))).toBe(false);
+    // Below thresholds: free/local year (no cost), few models, low cache → nothing.
+    const quiet = buildCandidates(null, quietRhythm, {
+      costUSD: 0,
+      activeDays: 3,
+      modelsTried: 2,
+      cacheHitRate: 0.1,
+    });
+    expect(quiet.some((c) => ['per active day', 'rotation', 're-reading'].some((t) => c.stat.label.includes(t)))).toBe(
+      false,
+    );
+  });
+
   test('apology scoreboard flips its punchline from the data', () => {
     const humanSorry = buildCandidates(contentWith({ userSorry: 20, assistantApology: 5 }), quietRhythm);
     const sb = humanSorry.find((c) => c.stat.label.includes('apology scoreboard'))!;
