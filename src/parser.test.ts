@@ -325,7 +325,9 @@ describe('extractMessages', () => {
       {
         type: 'user',
         message: {
-          content: [{ type: 'text', text: '<teammate-message teammate_id="reviewer" color="blue">ping</teammate-message>' }],
+          content: [
+            { type: 'text', text: '<teammate-message teammate_id="reviewer" color="blue">ping</teammate-message>' },
+          ],
         },
       },
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
