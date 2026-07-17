@@ -38,7 +38,11 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
     out.push({
       theme: 'friction',
       score: 0.15 + 0.8 * sat(interrupts, 150),
-      stat: { big: fmtInt(interrupts), label: 'times you cut Claude off mid-task', sub: 'the Escape key remembers' },
+      stat: {
+        big: fmtInt(interrupts),
+        label: 'times you cut Claude off mid-task',
+        sub: 'it was mid-sentence. you hit Escape like it owed you money.',
+      },
     });
   }
   if (content?.errors && content.errors.totalErrors > 0) {
@@ -66,8 +70,8 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
         // LIKE '%actually%' matches anywhere in the message, so the copy can't
         // claim position ("began with") — it's "contained an actually".
         big: fmtInt(actually),
-        label: 'prompts had second thoughts — "actually…"',
-        sub: tryAgain > 0 ? `plus ${fmtInt(tryAgain)} rounds of "try again"` : undefined,
+        label: 'times you said "actually" and moved the goalposts',
+        sub: tryAgain > 0 ? `plus ${fmtInt(tryAgain)} rounds of "try again," just to be sure` : undefined,
       },
     });
   }
@@ -79,7 +83,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(noWait),
         label: 'hard reverses mid-prompt — "no, wait—"',
-        sub: 'the sound of a plan changing',
+        sub: 'you heard your own idea out loud and flinched',
       },
     });
   }
@@ -90,8 +94,8 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       score: 0.2 + 0.6 * sat(swears, 60),
       stat: {
         big: fmtInt(swears),
-        label: 'prompts contained… strong feedback',
-        sub: 'we counted so you don’t have to',
+        label: 'prompts contained… strong language',
+        sub: 'we counted every one. the repo has feelings, you know.',
       },
     });
   }
@@ -149,7 +153,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(please),
         label: 'prompts said "please"',
-        sub: `and ${fmtInt(thanks)} said thanks — manners cost nothing`,
+        sub: `and ${fmtInt(thanks)} said thanks — hedging your bets for the uprising`,
       },
     });
   }
@@ -165,7 +169,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
         big: `${fmtInt(m.userAvg)} vs ${fmtInt(m.assistantAvg)}`,
         label: 'characters per message — you vs. Claude',
         sub: youTalkMore
-          ? 'you paste more than you type — that skews the average'
+          ? 'you didn’t type that, you pasted it — and the average tattled'
           : 'Claude does love a thorough answer',
       },
     });
@@ -178,7 +182,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(areYouSure),
         label: 'times you asked “are you sure?”',
-        sub: 'trust, but verify',
+        sub: 'faith in the machine: repeatedly shaken',
       },
     });
   }
@@ -253,7 +257,7 @@ export function buildCandidates(content: WrappedContentStats | null, rhythm: Wra
       stat: {
         big: fmtInt(rhythm.nightsPastMidnight),
         label: 'nights you coded past midnight',
-        sub: `latest sign-off: ${rhythm.latestNight.clock} on a ${WEEKDAYS[rhythm.latestNight.weekday]}`,
+        sub: `latest clock-out: ${rhythm.latestNight.clock} on a ${WEEKDAYS[rhythm.latestNight.weekday]} — sleep is a suggestion`,
       },
     });
   }
@@ -382,14 +386,17 @@ const FOCUS_THRESHOLD = 0.4;
 const DEPTH_THRESHOLD = 40; // raw indexed message_count median (tool turns included)
 
 const ARCHETYPES: Record<string, { name: string; tagline: string }> = {
-  'night|focus|deep': { name: 'The Midnight Machinist', tagline: 'One project, mostly after dark, total immersion.' },
+  'night|focus|deep': { name: 'The Midnight Machinist', tagline: 'One project, the small hours, total immersion.' },
   'night|focus|quick': { name: 'The Nocturnal Sniper', tagline: 'In after dark, one clean shot, out.' },
   'night|multi|deep': { name: 'The Moonlit Cartographer', tagline: 'Mapping every repo while the world sleeps.' },
   'night|multi|quick': { name: 'The 3 AM Tinkerer', tagline: 'No project is safe from a small-hours "what if".' },
   'day|focus|deep': { name: 'The Deep-Work Artisan', tagline: 'Long sessions, one obsession, real craft.' },
   'day|focus|quick': { name: 'The Surgical Striker', tagline: 'Precise questions, fast exits, ruthless focus.' },
   'day|multi|deep': { name: 'The Systems Gardener', tagline: 'Tending a dozen codebases until they all bloom.' },
-  'day|multi|quick': { name: 'The Rapid Prototyper', tagline: 'A new idea every time you sit down — some catch fire.' },
+  'day|multi|quick': {
+    name: 'The Rapid Prototyper',
+    tagline: 'A new idea every time you sit down — some even survive.',
+  },
 };
 
 export function selectPersona(
