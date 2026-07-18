@@ -314,4 +314,9 @@ server.tool(
 export async function startMcpServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // The SDK transport only listens for stdin 'data'/'error', so when the parent
+  // client dies the server is never told. Under Bun's compiled binary the EOF'd
+  // pipe then busy-loops the event loop at 100% CPU. Exit as soon as stdin ends.
+  process.stdin.on('end', () => process.exit(0));
+  process.stdin.on('close', () => process.exit(0));
 }

@@ -264,3 +264,30 @@ test('get_session_messages omits tools by default (back-compat shape)', async ()
   const parsed = JSON.parse(res.content[0]!.text);
   expect(parsed.messages[0].tools).toBeUndefined();
 });
+
+// ——— stdio lifecycle ———
+
+test('server exits when the client closes stdin instead of lingering as an orphan', async () => {
+  const proc = Bun.spawn([process.execPath, 'run', join(import.meta.dir, '..', 'index.ts'), '--mcp'], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'ignore',
+  });
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+  // Wait for the initialize response so the transport is fully wired before we hang up.
+  const reader = proc.stdout.getReader();
+  await reader.read();
+  reader.releaseLock();
+  proc.stdin.end(); // simulate the parent client dying
+  const result = await Promise.race([proc.exited, Bun.sleep(5000).then(() => 'orphaned' as const)]);
+  if (result === 'orphaned') proc.kill();
+  expect(result).toBe(0);
+}, 15000);
