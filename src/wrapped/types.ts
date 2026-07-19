@@ -74,6 +74,31 @@ export interface WrappedLongestSession {
   project: string;
 }
 
+/** Autonomous runs — "loops": back-to-back assistant events ≤ 30 min apart with
+ *  no genuine human turn between them. Claude Code sessions only — the one log
+ *  format whose `promptSource` proves a human typed; boundaries inferred from
+ *  other tools' logs could be agents prompting agents, and a superlative is
+ *  exactly where one automated session would steal the crown. */
+export interface WrappedLoops {
+  longest: {
+    /** From the launching prompt (when it immediately precedes the run) to the run's last event. */
+    durationMs: number;
+    /** Assistant API calls in the run — the loop's step count. */
+    steps: number;
+    /** input + output + cacheWrite over the run — same counting rule as totals. */
+    tokens: number;
+    date: string;
+    /** Local wall-clock moment the human stepped away, e.g. "9:42 PM". */
+    startClock: string;
+    project: string;
+    /** The last thing the human said before the run, cleaned for display. */
+    prompt: string | null;
+  };
+  /** Autonomous runs in the period across all qualifying sessions. */
+  count: number;
+  medianMs: number;
+}
+
 export interface WrappedSessionOfYear {
   title: string;
   project: string;
@@ -170,6 +195,7 @@ export interface WrappedData {
   tools: WrappedTool[];
   cacheHitRate: number | null;
   longestSession: WrappedLongestSession | null;
+  loops: WrappedLoops | null;
   sessionOfYear: WrappedSessionOfYear | null;
   content: WrappedContentStats | null;
   fun: FunCard[];

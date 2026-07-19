@@ -28,15 +28,28 @@ const event = (sessionId: string, timestamp: string, model = 'claude-opus-4-6', 
     },
   }) + '\n';
 
+/** A user-role line for the loop pass; extra fields ride through as-is. */
+const userLine = (sessionId: string, timestamp: string, content: unknown, extra: Record<string, unknown> = {}) =>
+  JSON.stringify({ type: 'user', sessionId, timestamp, message: { role: 'user', content }, ...extra }) + '\n';
+
 writeFileSync(
   join(claudeDir, 'proj', 'a.jsonl'),
-  // One long sitting (three replies 10 min apart) …
-  event('s1', '2026-06-01T14:00:00Z') +
+  // The human speaks at 13:58 — the loop's anchor.
+  userLine('s1', '2026-06-01T13:58:00Z', 'make the tests pass and do not stop', { promptSource: 'typed' }) +
+    // One long sitting (three replies 10 min apart) …
+    event('s1', '2026-06-01T14:00:00Z') +
+    // A tool_result user line mid-run — not a human, must not split the loop.
+    userLine('s1', '2026-06-01T14:05:00Z', [{ type: 'tool_result', content: 'ok' }]) +
     event('s1', '2026-06-01T14:10:00Z') +
+    // A sidechain (subagent) prompt mid-run — an agent talking, must not split the loop.
+    userLine('s1', '2026-06-01T14:15:00Z', 'Explore the codebase thoroughly.', { isSidechain: true }) +
     event('s1', '2026-06-01T14:20:00Z') +
     // … then the same session resumed three weeks later — must not count as a 3-week sitting.
+    // The injected continuation (promptSource null) is not a human turn either.
+    userLine('s1', '2026-06-22T08:59:00Z', 'auto continuation', { promptSource: null }) +
     event('s1', '2026-06-22T09:00:00Z') +
     // A small-hours event (03:30 UTC = 22:30 America/Chicago the previous day; use UTC tz in tests).
+    // s2 has no genuine human turn at all — automation, invisible to the loop pass.
     event('s2', '2026-06-03T03:30:00Z', 'claude-fable-5') +
     // Out-of-year noise that must be filtered.
     event('s3', '2025-11-11T11:00:00Z'),
@@ -173,6 +186,20 @@ describe('runWrapped', () => {
     // and the 22nd are the year's longest disappearance.
     expect(data.longestGap).toEqual({ days: 18, from: '2026-06-04', to: '2026-06-21' });
     expect(data.modelsTried).toBe(2);
+    // The loop: anchored at the 13:58 typed prompt, ended by the 30-min gap
+    // after 14:20. The tool_result at 14:05 and the sidechain prompt at 14:15
+    // are not humans — neither may split the run.
+    expect(data.loops.longest.durationMs).toBe(22 * 60_000);
+    expect(data.loops.longest.steps).toBe(3);
+    expect(data.loops.longest.tokens).toBe(3 * 1700);
+    expect(data.loops.longest.prompt).toBe('make the tests pass and do not stop');
+    expect(data.loops.longest.startClock).toBe('1:58 PM');
+    expect(data.loops.longest.date).toBe('2026-06-01');
+    // The June 22 resume is a second run: its injected continuation is not
+    // genuine, and the real trigger is 3 weeks stale — so it's timed on its
+    // own single event (0 ms). s2 (no human turns) contributes nothing.
+    expect(data.loops.count).toBe(2);
+    expect(data.loops.medianMs).toBe(11 * 60_000);
   });
 
   test('--year selects a past calendar year in full', async () => {
@@ -215,6 +242,9 @@ describe('runWrapped', () => {
     expect(html).toContain('id="credits"');
     // The 18-day silence clears the 7-day bar for the disappearance card.
     expect(html).toContain('id="vanish"');
+    // The 22-minute loop clears the 10-minute bar for the loop card.
+    expect(html).toContain('id="loop"');
+    expect(html).toContain('last known human words');
     // Mid-year runs disclose partial coverage.
     expect(html).toContain('so far');
   });

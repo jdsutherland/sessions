@@ -34,6 +34,13 @@ function fmtDuration(ms: number): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+/** Seconds-capable variant — a median loop is often under a minute, and "0m"
+ *  reads as a bug. */
+function fmtDurationShort(ms: number): string {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : fmtDuration(ms);
+}
+
 function hourLabel(h: number): string {
   if (h === 0) return '12 AM';
   if (h === 12) return '12 PM';
@@ -407,6 +414,28 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
             ? `<div class="substat" style="--i:1"><span class="sn">${esc(fmtDuration(ls.durationMs))}</span><span class="sl">your longest sitting — ${fmtInt(ls.replies)} ${plural(ls.replies, 'reply', 'replies')}, ${esc(formatDate(ls.date))}, ${esc(ls.project)}</span></div>`
             : ''
         }${soy ? foot('ranked by substance: message volume, files edited, and whether something shipped') : ''}</div>`,
+      });
+    }
+
+    // The loop — the longest stretch the machine ran with nobody home. The
+    // sitting above measures endurance WITH you in the chair; this one measures
+    // trust. Under ten minutes isn't a story (the JSON still carries it).
+    if (d.loops && d.loops.longest.durationMs >= 10 * 60_000) {
+      const lp = d.loops;
+      const L = lp.longest;
+      const dur = fmtDuration(L.durationMs);
+      const ratio = lp.medianMs >= 1000 ? L.durationMs / lp.medianMs : null;
+      cards.push({
+        id: 'loop',
+        body: `${echo(dur)}<div class="panel center">${kicker('the loop')}<h2>You hit enter. And walked away.</h2><div class="${heroClass(dur, 'word')}"><span class="n">${esc(dur)}</span></div><p class="lede">of unsupervised machine — <b>${fmtInt(L.steps)}</b> model ${plural(L.steps, 'call')} back to back${
+          L.tokens > 0 ? `, <b>${fmtTokens(L.tokens)}</b> tokens` : ''
+        }, zero human input · from <b>${esc(L.startClock)}</b>, ${esc(formatDate(L.date))}, on <b>${esc(L.project)}</b></p>${
+          L.prompt ? `<p class="lede">last known human words: <em>“${esc(L.prompt)}”</em></p>` : ''
+        }${
+          ratio !== null && ratio >= 3
+            ? `<div class="substat" style="--i:1"><span class="sn">${esc(fmtDurationShort(lp.medianMs))}</span><span class="sl">your median loop — this one went ${fmtInt(Math.round(ratio))}× longer, and nobody stopped it</span></div>`
+            : ''
+        }${foot(`a loop = back-to-back model calls ≤ 30 min apart with no human turn in between · you set ${fmtInt(lp.count)} of them loose this year · Claude Code sessions only`)}</div>`,
       });
     }
 

@@ -13,7 +13,8 @@ import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
 import { localDate } from '../report/parsers/util.ts';
-import { computeEventStats, longestGapRange, longestStreakRange } from './compute.ts';
+import { computeEventStats, computeLoops, longestGapRange, longestStreakRange } from './compute.ts';
+import { collectClaudeUserTurns } from './loops.ts';
 import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
@@ -175,7 +176,8 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   const to = todayLocal < yearEnd && todayLocal >= from ? todayLocal : yearEnd;
 
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
+  const roots = opts.roots ?? defaultRoots();
+  const events = await gatherEvents(roots, tools);
   // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
   // projects) is computed from the SAME events as `sessions report` so the two
   // reconcile exactly — automated eval/tmp runs cost real money and belong in the
@@ -203,6 +205,19 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   }
 
   const ev = computeEventStats(inRange, tz);
+
+  // The loop pass re-walks the Claude Code root for the human-turn timestamps
+  // the report parsers throw away. Claude-only by design (see loops.ts), so
+  // skip the walk entirely when another tool was requested. Fail-open: an
+  // unreadable root just means no loop slide.
+  let loops = null;
+  if (!opts.tool || opts.tool === 'claude-code') {
+    try {
+      loops = computeLoops(inRange, await collectClaudeUserTurns(roots.claudeCode), tz);
+    } catch (err) {
+      process.stderr.write(`warning: could not read user turns for the loop stat (${String(err)})\n`);
+    }
+  }
 
   let extras: WrappedExtra[] = [];
   if (opts.extras) {
@@ -386,6 +401,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     tools: toolsOut,
     cacheHitRate: ev.cacheHitRate,
     longestSession: ev.longestSession,
+    loops,
     sessionOfYear,
     content,
     fun,

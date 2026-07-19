@@ -8,7 +8,13 @@ import type { UsageEvent } from '../report/parsers/types.ts';
 import { localDate, localHour } from '../report/parsers/util.ts';
 import { resolveProject } from '../report/project.ts';
 import { isRealModel, canonicalModel } from './model-name.ts';
-import type { WrappedLongestSession, WrappedRhythm } from './types.ts';
+import { isJunkCwd } from './exclude.ts';
+import type { UserTurn } from './loops.ts';
+import type { WrappedLongestSession, WrappedLoops, WrappedRhythm } from './types.ts';
+
+/** One threshold for "still the same stretch of work" — sittings and loops
+ *  must agree on it or the two cards contradict each other. */
+export const SITTING_GAP_MS = 30 * 60_000;
 
 export interface ModelFirsts {
   firstSeen: string;
@@ -152,7 +158,6 @@ export function computeEventStats(events: UsageEvent[], tz: string): WrappedEven
   // Longest *sitting*, not longest session id: resumed sessions span days or
   // weeks, so a session's events are split into continuous runs (gap ≤ 30 min)
   // and the longest run wins. 92 replies spread over 27 days is not a sitting.
-  const SITTING_GAP_MS = 30 * 60_000;
   let longest: WrappedLongestSession | null = null;
   for (const s of sessions.values()) {
     const ts = s.timestamps.map((t) => Date.parse(t)).sort((a, b) => a - b);
@@ -218,6 +223,118 @@ export function computeEventStats(events: UsageEvent[], tz: string): WrappedEven
     modelFirsts,
     nightShare: events.length > 0 ? nightMsgs / events.length : 0,
   };
+}
+
+/** Raw prompts arrive as markdown pasted at 2 AM; a quote on a slide shouldn't.
+ *  Mirrors content.ts's cleanTitle but clamps for a one-line quote. */
+function cleanPrompt(raw: string): string | null {
+  const cleaned = raw
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#*`>_|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return null;
+  const cps = [...cleaned];
+  return cps.length > 90 ? `${cps.slice(0, 90).join('').trimEnd()}…` : cleaned;
+}
+
+/**
+ * Autonomous runs — "loops". A loop is a stretch of back-to-back assistant
+ * events (gap ≤ SITTING_GAP_MS) with no genuine human turn between them,
+ * timed from the prompt that launched it. Only sessions with at least one
+ * genuine human boundary play: a session with zero human turns is automation
+ * end-to-end (headless runs, probes), and junk cwds are out for the same
+ * reason — a superlative is exactly where one automated session would steal
+ * the crown. In practice this is Claude Code only: the boundary collector
+ * (loops.ts) covers the one log format that proves a human typed.
+ *
+ * A turn boundary splits a run even when the events around it are close
+ * together — the human intervened, the loop ended. A trigger further back
+ * than the gap (scheduled wakeups, hook-injected continuations) still names
+ * the run's prompt but doesn't extend its clock: the run is timed on its own
+ * events then, not from words spoken hours earlier.
+ */
+export function computeLoops(
+  events: UsageEvent[],
+  userTurns: Map<string, UserTurn[]>,
+  tz: string,
+): WrappedLoops | null {
+  interface Ev {
+    at: number;
+    toks: number;
+  }
+  const sessions = new Map<string, { evs: Ev[]; project?: string }>();
+  for (const e of events) {
+    const key = `${e.tool}|${e.sessionId}`;
+    if (!userTurns.has(key)) continue;
+    if (isJunkCwd(e.projectPath)) continue;
+    let s = sessions.get(key);
+    if (!s) {
+      s = { evs: [], project: e.projectPath };
+      sessions.set(key, s);
+    }
+    if (!s.project) s.project = e.projectPath;
+    s.evs.push({ at: Date.parse(e.timestamp), toks: e.tokens.input + e.tokens.output + e.tokens.cacheWrite });
+  }
+
+  let longest: WrappedLoops['longest'] | null = null;
+  const durations: number[] = [];
+
+  for (const [key, s] of sessions) {
+    const turns = userTurns.get(key)!;
+    const evs = s.evs.sort((a, b) => a.at - b.at);
+    if (evs.length === 0) continue;
+
+    // Two monotone pointers over the same sorted turns: `sp` finds each run's
+    // trigger (latest turn at or before its first event), `tp` finds splits
+    // (a turn strictly between two consecutive events).
+    let sp = 0;
+    let tp = 0;
+    let runStart = 0;
+    let runToks = 0;
+
+    // Returns the run's trigger so the assignment stays in this scope — TS
+    // ignores writes made inside the closure when narrowing `trigger` below.
+    const openRun = (idx: number): UserTurn | null => {
+      runStart = idx;
+      runToks = 0;
+      while (sp < turns.length && turns[sp]!.at <= evs[idx]!.at) sp++;
+      return sp > 0 ? turns[sp - 1]! : null;
+    };
+    let trigger = openRun(0);
+
+    for (let i = 1; i <= evs.length; i++) {
+      runToks += evs[i - 1]!.toks;
+      while (tp < turns.length && turns[tp]!.at <= evs[i - 1]!.at) tp++;
+      const split =
+        i === evs.length ||
+        evs[i]!.at - evs[i - 1]!.at > SITTING_GAP_MS ||
+        (tp < turns.length && turns[tp]!.at <= evs[i]!.at);
+      if (!split) continue;
+
+      const first = evs[runStart]!;
+      const last = evs[i - 1]!;
+      const anchorAt = trigger && first.at - trigger.at <= SITTING_GAP_MS ? trigger.at : first.at;
+      const durationMs = last.at - anchorAt;
+      durations.push(durationMs);
+      if (!longest || durationMs > longest.durationMs) {
+        longest = {
+          durationMs,
+          steps: i - runStart,
+          tokens: runToks,
+          date: localDate(new Date(anchorAt).toISOString(), tz),
+          startClock: localClock(new Date(anchorAt).toISOString(), tz),
+          project: resolveProject(s.project),
+          prompt: trigger ? cleanPrompt(trigger.text) : null,
+        };
+      }
+      if (i < evs.length) trigger = openRun(i);
+    }
+  }
+
+  if (!longest) return null;
+  durations.sort((a, b) => a - b);
+  return { longest, count: durations.length, medianMs: median(durations) };
 }
 
 /** Longest run of silent days strictly between two active dates — the

@@ -4,11 +4,16 @@ interface JsonLine {
   type?: string;
   cwd?: string;
   timestamp?: string;
+  sessionId?: string;
   gitBranch?: string;
   promptSource?: string | null;
   /** Claude marks auto-generated context-carryover turns (the "continued from a
    *  previous conversation" summary written on compaction) with this flag. */
   isCompactSummary?: boolean;
+  /** True on every line of a subagent (Task) transcript — which carries the
+   *  PARENT sessionId, so its injected "user" prompt would otherwise pass for
+   *  the human speaking mid-session. */
+  isSidechain?: boolean;
   message?: Record<string, unknown> | string;
   payload?: Record<string, unknown>;
 }
@@ -158,6 +163,31 @@ function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
     return d.promptSource === 'typed' || d.promptSource === 'queued';
   }
   return true;
+}
+
+export interface GenuineUserTurn {
+  sessionId: string;
+  timestamp: string;
+  text: string;
+}
+
+/**
+ * A genuine human turn with its place in time — the boundary marker wrapped's
+ * loop metric splits autonomous runs on. Takes an already-parsed JSONL line
+ * (the report walkers yield parsed objects, not strings). Beyond the
+ * `isGenuineUserTurn` rules this also rejects sidechain lines: a subagent
+ * transcript carries the parent sessionId, so its injected task prompt would
+ * otherwise read as the human speaking mid-loop.
+ */
+export function genuineUserTurnFromLine(v: unknown): GenuineUserTurn | null {
+  if (!v || typeof v !== 'object') return null;
+  const d = v as JsonLine;
+  if (d.isSidechain === true || !isUserMessage(d)) return null;
+  const { sessionId, timestamp } = d;
+  if (!sessionId || !timestamp) return null;
+  const text = extractUserText(d).trim();
+  if (!text || !isGenuineUserTurn(d, text)) return null;
+  return { sessionId, timestamp, text };
 }
 
 /** Genuine human user turns, in order, as stripped (not length-clamped) text. */
