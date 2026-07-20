@@ -25,6 +25,7 @@ ${C.bold}Options:${C.reset}
                    when no query is given
   --mcp            Start as an MCP server (stdio transport)
   --clear-cache    Remove the search index (rebuilds on next use)
+  -v, --version    Print the CLI version
   -h, --help       Show this help
 
 ${C.bold}Commands:${C.reset}

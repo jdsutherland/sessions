@@ -1,4 +1,5 @@
 import { basename } from 'node:path';
+import { version } from './package.json';
 import { parseArgs, getRepoRoot, toSearchOptions } from './src/cli';
 import { C } from './src/colors';
 import { scanSessions } from './src/scanner';
@@ -7,6 +8,11 @@ import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
 import { buildResumeCommand } from './src/search-format';
 import type { Tool } from './src/types';
+
+if (Bun.argv.includes('--version') || Bun.argv.includes('-v')) {
+  process.stdout.write(`sessions ${version}\n`);
+  process.exit(0);
+}
 
 if (Bun.argv.includes('--clear-cache')) {
   const { clearCache } = await import('./src/cache');

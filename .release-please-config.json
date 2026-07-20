@@ -4,7 +4,13 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "package-name": "sessions"
+      "package-name": "sessions",
+      "extra-files": [
+        { "type": "json", "path": "plugin/.claude-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "plugin/.codex-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "plugin/.cursor-plugin/plugin.json", "jsonpath": "$.version" },
+        { "type": "generic", "path": "src/setup.ts" }
+      ]
     }
   }
 }
