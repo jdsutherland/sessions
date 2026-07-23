@@ -11,6 +11,7 @@ import { loadRuntimePricing } from './pricing-cache.ts';
 import { resolvePeriod, type PeriodPreset } from './period.ts';
 import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
+import { writeStdoutFully } from '../stdout.ts';
 
 export type ReportFormat = 'json' | 'html' | 'both';
 
@@ -194,9 +195,7 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const outBase = opts.out ?? (needsFile ? await mkdtemp(join(tmpdir(), 'sessions-report-')) : undefined);
 
   if (opts.stdout) {
-    // Bun.write awaits the flush; process.stdout.write + the caller's
-    // process.exit(0) truncates piped output at the 64KB pipe buffer.
-    await Bun.write(Bun.stdout, json + '\n');
+    await writeStdoutFully(json + '\n');
   } else if (wantJson) {
     const p = opts.format === 'both' || !opts.out ? join(outBase!, 'usage-report.json') : opts.out;
     await writeFile(p, json, 'utf8');
