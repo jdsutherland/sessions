@@ -13,6 +13,7 @@ import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
 import { localDate } from '../report/parsers/util.ts';
+import { writeStdoutFully } from '../stdout.ts';
 import { computeEventStats, computeLoops, longestGapRange, longestStreakRange } from './compute.ts';
 import { collectClaudeUserTurns } from './loops.ts';
 import { computeContentStats } from './content.ts';
@@ -422,9 +423,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   const result: WrappedResult = { json };
 
   if (opts.stdout) {
-    // Bun.write awaits the flush; process.stdout.write + the caller's
-    // process.exit(0) truncates piped output at the 64KB pipe buffer.
-    await Bun.write(Bun.stdout, json + '\n');
+    await writeStdoutFully(json + '\n');
     return result;
   }
 
