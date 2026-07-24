@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.3](https://github.com/nicknisi/sessions/compare/v1.15.2...v1.15.3) (2026-07-24)
+
+
+### Performance Improvements
+
+* reduce MCP indexing overhead ([#46](https://github.com/nicknisi/sessions/issues/46)) ([4590e01](https://github.com/nicknisi/sessions/commit/4590e013e17f6274237e523b76f4af9bf9cf2848))
+
 ## [1.15.2](https://github.com/nicknisi/sessions/compare/v1.15.1...v1.15.2) (2026-07-23)
 
 
