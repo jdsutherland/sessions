@@ -96,6 +96,9 @@ export function closeDb(): void {
     _db?.close();
   } catch {}
   _db = null;
+  // Drop the in-flight refresh too: it targets the handle we just closed, so a
+  // later ensureIndexFresh must start a new scan rather than join a doomed one.
+  _refreshPromise = null;
   _lastRefreshAt = 0;
   _lastRefreshResult = { total: 0, updated: 0 };
   closeOpencodeDb();
@@ -308,11 +311,13 @@ function collectSubagentText(filePath: string, tool: Tool): string {
   return '';
 }
 
-function indexFile(db: Database, filePath: string, tool: Tool, knownStat?: { mtimeMs: number; size: number }): boolean {
-  // A candidate may wait behind another MCP process at BEGIN IMMEDIATE. Refresh
-  // its signal after that wait so we can observe the other process's completed
-  // write (or a transcript append that happened in the meantime).
-  const stat = knownStat ? (statSession(filePath, tool) ?? knownStat) : statSession(filePath, tool);
+function indexFile(db: Database, filePath: string, tool: Tool): boolean {
+  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
+  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
+  // this is where we observe that process's completed write (or a transcript
+  // append) and skip the parse. A file that vanished during the wait stats as
+  // null and is left entirely alone — pruning, not ignoring, is its owner.
+  const stat = statSession(filePath, tool);
   if (!stat) return false;
 
   const existing = db
@@ -462,7 +467,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
   // candidates whose invalidation signal differs. indexFile re-checks after
   // BEGIN IMMEDIATE so a second MCP process that refreshed first makes this one
   // skip the expensive parse instead of duplicating it or racing a write lock.
-  const candidates: { file: FileEntry; stat: { mtimeMs: number; size: number } }[] = [];
+  const candidates: FileEntry[] = [];
   for (const file of files) {
     const stat = statSession(file.path, file.tool);
     if (!stat) continue;
@@ -471,7 +476,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     const indexedMatches = existing && existing.mtime === stat.mtimeMs && existing.size === stat.size;
     const ignoredMatches = ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size;
     if (!indexedMatches && !ignoredMatches) {
-      candidates.push({ file, stat });
+      candidates.push(file);
     }
   }
 
@@ -481,8 +486,8 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     const batch = candidates.slice(i, i + BATCH);
     db.exec('BEGIN IMMEDIATE');
     try {
-      for (const { file, stat } of batch) {
-        if (indexFile(db, file.path, file.tool, stat)) updated++;
+      for (const file of batch) {
+        if (indexFile(db, file.path, file.tool)) updated++;
       }
       db.exec('COMMIT');
     } catch (error) {
@@ -495,9 +500,15 @@ async function runRefreshIndex(): Promise<RefreshResult> {
 }
 
 /**
- * Force a source scan, coalescing concurrent callers in this process. Explicit
- * callers keep the original "refresh now" contract; MCP/query entry points use
- * ensureIndexFresh below to avoid repeating this work in a request burst.
+ * Force a source scan, coalescing concurrent callers in this process onto one
+ * pass. Every query/MCP entry point goes through ensureIndexFresh instead, so
+ * today this is reached only by tests — it stays exported as the "scan now" seam
+ * for an explicit rebuild command.
+ *
+ * Coalescing weakens "scan now" for a caller that arrives mid-flight: it joins a
+ * pass whose file list was snapshotted before the caller's own write, so it may
+ * not observe that write. Anything needing a guaranteed post-write scan must run
+ * after the in-flight promise settles, not alongside it.
  */
 export async function refreshIndex(): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;

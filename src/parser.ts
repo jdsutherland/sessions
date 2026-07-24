@@ -308,15 +308,19 @@ export function messageCount(lines: string[]): number {
   return count;
 }
 
+/**
+ * The last dated line in a transcript. Scans backwards, so the common case (the
+ * final line carries a timestamp) still returns on the first iteration.
+ *
+ * This is the differential oracle for `extractSessionMetadata().date` — the two
+ * must agree exactly. An earlier version searched only the last 200 lines and,
+ * finding nothing dated there, fell back to the *first* timestamp in the file;
+ * that fallback reported a session's date as its start rather than its end, and
+ * no real transcript ever reached it (Claude dates every line).
+ */
 export function lastTimestamp(lines: string[]): string {
-  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 200); i--) {
+  for (let i = lines.length - 1; i >= 0; i--) {
     const d = tryParseJson(lines[i]!);
-    if (!d) continue;
-    const ts = d.timestamp as string | undefined;
-    if (ts && ts[0] === '2') return ts.slice(0, 10);
-  }
-  for (const line of lines) {
-    const d = tryParseJson(line);
     if (!d) continue;
     const ts = d.timestamp as string | undefined;
     if (ts && ts[0] === '2') return ts.slice(0, 10);
@@ -568,8 +572,7 @@ export function summarizeMessages(messages: ExtractedMessage[]): MessageSummary 
  * synthesis layer (Phase 2) can decide what the open thread is — the last
  * assistant turn alone is often a question or tool call, not an outcome.
  */
-export function closingMessages(lines: string[], tool: Tool): { user: string; assistant: string } {
-  void tool; // Retained for API compatibility; extraction is format-aware by record shape.
+export function closingMessages(lines: string[]): { user: string; assistant: string } {
   const summary = summarizeMessages(extractMessages(lines));
   return { user: summary.closingUser, assistant: summary.closingAssistant };
 }

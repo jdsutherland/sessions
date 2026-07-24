@@ -73,6 +73,24 @@ describe('extractSessionMetadata', () => {
       branch: 'perf/index',
     });
   });
+
+  // Regression guard for the one input shape where the old date helper disagreed:
+  // it searched only the final 200 lines and, finding nothing dated there, fell
+  // back to the FIRST timestamp — reporting a session's start as its end. Both
+  // implementations must now report the last dated line regardless of tail length.
+  test('reports the last dated line even when the final 200+ lines carry no timestamp', () => {
+    const lines = [
+      ...jsonl(
+        { type: 'user', cwd: '/repo', timestamp: '2026-01-01T10:00:00Z', message: { content: 'start' } },
+        { type: 'assistant', cwd: '/repo', timestamp: '2026-05-05T10:00:00Z', message: { content: 'end' } },
+      ),
+      ...Array.from({ length: 205 }, () => JSON.stringify({ type: 'summary', summary: 'undated tail' })),
+    ];
+
+    expect(extractSessionMetadata(lines, 'claude').date).toBe('2026-05-05');
+    expect(extractSessionMetadata(lines, 'claude').date).toBe(lastTimestamp(lines));
+    expect(extractSessionMetadata(lines, 'claude').createdAt).toBe(firstTimestamp(lines));
+  });
 });
 
 test('summarizeMessages reuses extracted messages without changing prompt or closing semantics', () => {
@@ -94,7 +112,7 @@ test('summarizeMessages reuses extracted messages without changing prompt or clo
 
   const summary = summarizeMessages(extractMessages(lines));
   expect(summary.firstPrompt).toBe(firstPrompt(lines, 'claude'));
-  expect({ user: summary.closingUser, assistant: summary.closingAssistant }).toEqual(closingMessages(lines, 'claude'));
+  expect({ user: summary.closingUser, assistant: summary.closingAssistant }).toEqual(closingMessages(lines));
 });
 
 describe('customTitle', () => {
@@ -518,7 +536,7 @@ describe('closingMessages user side', () => {
         message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] },
       },
     );
-    expect(closingMessages(lines, 'claude').user).toBe('commit and PR it');
+    expect(closingMessages(lines).user).toBe('commit and PR it');
   });
 
   test('old logs (no promptSource): heuristic still drops a skill-injection turn', () => {
@@ -526,7 +544,7 @@ describe('closingMessages user side', () => {
       { type: 'user', message: { content: [{ type: 'text', text: 'fix the bug' }] } },
       { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /z' }] } },
     );
-    expect(closingMessages(lines, 'claude').user).toBe('fix the bug');
+    expect(closingMessages(lines).user).toBe('fix the bug');
   });
 });
 
@@ -543,7 +561,7 @@ describe('closingMessages assistant side', () => {
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'ship it' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
     );
-    const a = closingMessages(lines, 'claude').assistant;
+    const a = closingMessages(lines).assistant;
     expect(a).toContain('Done. Shipped it.');
     expect(a).toContain('The index is the moat.');
     expect(a).not.toContain('★');
@@ -556,7 +574,7 @@ describe('closingMessages assistant side', () => {
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'advise' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
     );
-    const a = closingMessages(lines, 'claude').assistant;
+    const a = closingMessages(lines).assistant;
     expect(a).toContain('-----'); // ASCII rule is not the box-drawing fence
     expect(a).toContain('Insight'); // bare heading, no ★ marker
     expect(a).toContain('pick the first.');

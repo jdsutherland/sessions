@@ -216,6 +216,19 @@ test('errored filter and metadata: only errored sessions, with files/commands/er
 
 // ——— message-granularity (schema v7) tests — additive; do not modify cases above ———
 
+function ignoredRow(filePath: string): { mtime: number; size: number } | null {
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    return (
+      db
+        .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
+        .get(filePath) ?? null
+    );
+  } finally {
+    db.close();
+  }
+}
+
 function messageRowCount(filePath: string): number {
   // Independent read-only connection (WAL allows concurrent readers) to assert
   // row-level state that the search API alone can't prove.
@@ -279,7 +292,7 @@ test('re-index idempotency: an mtime touch leaves no duplicate message rows', as
   expect(r.find((x) => x.sessionId === 'c')!.messageHits).toHaveLength(1);
 });
 
-test('concurrent refreshes coalesce instead of nesting transactions or duplicating work', async () => {
+test('concurrent refreshes coalesce onto a single scan instead of each redoing the work', async () => {
   const future = new Date(Date.now() + 10_000);
   utimesSync(cPath(), future, future);
 
@@ -288,24 +301,23 @@ test('concurrent refreshes coalesce instead of nesting transactions or duplicati
   expect(messageRowCount(cPath())).toBe(2);
 });
 
-test('unchanged invalid transcripts are tracked in the negative inventory cache', async () => {
+test('unchanged invalid transcripts are tracked in the negative inventory cache, then pruned', async () => {
   const path = join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'ignored.jsonl');
   writeFileSync(path, JSON.stringify({ type: 'user', timestamp: '2026-06-06T12:00:00Z' }));
-
-  await cache.refreshIndex();
-  const db = new Database(cache.getDbPath(), { readonly: true });
   try {
-    const row = db
-      .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
-      .get(path);
-    expect(row?.size).toBeGreaterThan(0);
+    await cache.refreshIndex();
+    expect(ignoredRow(path)?.size).toBeGreaterThan(0);
+
+    // The whole point of the table: an unindexable file stops being a candidate.
+    expect((await cache.refreshIndex()).updated).toBe(0);
   } finally {
-    db.close();
+    // Unconditional, so a failure above cannot leak this transcript into the
+    // shared fixture dir and skew the tests that follow.
+    rmSync(path, { force: true });
   }
 
-  expect((await cache.refreshIndex()).updated).toBe(0);
-  rmSync(path);
   await cache.refreshIndex();
+  expect(ignoredRow(path)).toBeNull();
 });
 
 test('pruning: deleting the file empties both FTS tables for it', async () => {
