@@ -320,6 +320,8 @@ Each session file is parsed to extract:
 
 Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/sessions/index.db`. Messages are indexed individually, so a hit localizes to the exact message that matched — not just the session. The index is built automatically on first use (under a minute for a few thousand sessions) and updated incrementally on subsequent runs by checking file modification times — only new or changed sessions are re-indexed.
 
+Long-lived MCP servers coalesce concurrent refreshes and reuse a freshness check for five seconds, so a burst of related tool calls does not walk the full session tree repeatedly. Set `SESSIONS_REFRESH_INTERVAL_MS=0` on the MCP process to require a source scan before every call.
+
 To clear the index and force a full rebuild:
 
 ```sh

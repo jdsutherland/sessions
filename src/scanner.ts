@@ -3,16 +3,7 @@ import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { type Tool, type SessionResult } from './types';
-import {
-  getCwdFromSession,
-  firstPrompt,
-  lastTimestamp,
-  contentMatches,
-  findMatchContext,
-  customTitle,
-  firstTimestamp,
-  messageCount,
-} from './parser';
+import { extractSessionMetadata, firstPrompt, contentMatches, findMatchContext } from './parser';
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
@@ -32,51 +23,46 @@ async function processSession(
   const lines = readSessionLines(filePath, tool);
   if (lines.length === 0) return null;
 
-  const cwd = getCwdFromSession(lines, tool);
-  if (!cwd) return null;
+  const metadata = extractSessionMetadata(lines, tool);
+  if (!metadata.cwd) return null;
   // Boundary-aware: a sibling sharing a prefix (e.g. `dotfiles-v2`) is not under `repoRoot`.
-  if (!searchAll && !cwdUnder(cwd, repoRoot)) return null;
-  if (cwd.includes('.claude/worktrees') || cwd.includes('/.bare')) return null;
+  if (!searchAll && !cwdUnder(metadata.cwd, repoRoot)) return null;
+  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return null;
 
   const sessionId = basename(filePath).replace('.jsonl', '');
-
-  const date = lastTimestamp(lines);
-  const createdAt = firstTimestamp(lines);
-  const title = customTitle(lines);
-  const msgCount = messageCount(lines);
 
   if (searchQuery) {
     if (!contentMatches(lines, searchQuery)) return null;
     const displayText = findMatchContext(lines, searchQuery);
     return {
-      date,
-      createdAt,
-      cwd,
+      date: metadata.date,
+      createdAt: metadata.createdAt,
+      cwd: metadata.cwd,
       tool,
       sessionId,
       displayText,
-      customTitle: title,
-      messageCount: msgCount,
+      customTitle: metadata.customTitle,
+      messageCount: metadata.messageCount,
       filePath,
-      exists: existsSync(cwd),
+      exists: existsSync(metadata.cwd),
       files: [],
       commands: [],
       errored: false,
     };
   }
 
-  const displayText = title || firstPrompt(lines, tool);
+  const displayText = metadata.customTitle || firstPrompt(lines, tool);
   return {
-    date,
-    createdAt,
-    cwd,
+    date: metadata.date,
+    createdAt: metadata.createdAt,
+    cwd: metadata.cwd,
     tool,
     sessionId,
     displayText,
-    customTitle: title,
-    messageCount: msgCount,
+    customTitle: metadata.customTitle,
+    messageCount: metadata.messageCount,
     filePath,
-    exists: existsSync(cwd),
+    exists: existsSync(metadata.cwd),
     files: [],
     commands: [],
     errored: false,

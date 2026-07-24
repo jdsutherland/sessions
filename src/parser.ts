@@ -6,6 +6,7 @@ interface JsonLine {
   timestamp?: string;
   sessionId?: string;
   gitBranch?: string;
+  customTitle?: string;
   promptSource?: string | null;
   /** Claude marks auto-generated context-carryover turns (the "continued from a
    *  previous conversation" summary written on compaction) with this flag. */
@@ -24,6 +25,70 @@ function tryParseJson(line: string): JsonLine | null {
   } catch {
     return null;
   }
+}
+
+export interface SessionMetadata {
+  cwd: string;
+  customTitle: string;
+  date: string;
+  createdAt: string;
+  messageCount: number;
+  branch: string;
+}
+
+/**
+ * Extract the session-level fields needed by the index in one JSON parse pass.
+ * These used to be collected by six independent helpers, which made indexing an
+ * actively growing (and often multi-megabyte) transcript parse the same JSONL
+ * records over and over.
+ */
+export function extractSessionMetadata(lines: string[], tool: Tool): SessionMetadata {
+  let cwd = '';
+  let title = '';
+  let firstDate = '?';
+  let lastDate = '?';
+  let count = 0;
+  let branch = '';
+
+  for (const line of lines) {
+    const d = tryParseJson(line);
+    if (!d) continue;
+
+    if (!cwd) {
+      if (tool === 'claude' && d.cwd) {
+        cwd = d.cwd;
+      } else if ((tool === 'pi' || tool === 'opencode') && d.type === 'session' && d.cwd) {
+        cwd = d.cwd;
+      } else if (tool === 'codex' && d.type === 'session_meta') {
+        const value = (d.payload as Record<string, unknown> | undefined)?.cwd;
+        if (typeof value === 'string' && value) cwd = value;
+      }
+    }
+
+    if (d.type === 'custom-title') title = d.customTitle ?? '';
+
+    if (d.timestamp?.[0] === '2') {
+      const date = d.timestamp.slice(0, 10);
+      if (firstDate === '?') firstDate = date;
+      lastDate = date;
+    }
+
+    if (isUserMessage(d) || d.type === 'assistant') {
+      count++;
+    } else if (d.type === 'message') {
+      const msg = d.message;
+      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
+    }
+
+    if (tool === 'claude') {
+      if (typeof d.gitBranch === 'string' && d.gitBranch) branch = d.gitBranch;
+    } else if (tool === 'codex' && !branch && d.type === 'session_meta') {
+      const git = (d.payload as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
+      if (typeof git?.branch === 'string' && git.branch) branch = git.branch;
+    }
+  }
+
+  return { cwd, customTitle: title, date: lastDate, createdAt: firstDate, messageCount: count, branch };
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {
@@ -391,6 +456,12 @@ export interface ExtractedMessage {
   tools: ToolUse[];
 }
 
+export interface MessageSummary {
+  firstPrompt: string;
+  closingUser: string;
+  closingAssistant: string;
+}
+
 /**
  * The single numbering authority for message extraction. Every non-empty
  * user/assistant message in order, with a sequential index and a `genuine` flag
@@ -461,26 +532,46 @@ export function stripInsightFences(text: string): string {
 }
 
 /**
+ * Build the prompt/closing columns from an extraction the index already needs
+ * for message_fts. Keeping this as a projection avoids three additional full
+ * transcript passes in the hot indexing path.
+ */
+export function summarizeMessages(messages: ExtractedMessage[]): MessageSummary {
+  let first = '';
+  let lastUser = '';
+  let lastAssistant = '';
+
+  for (const message of messages) {
+    if (message.role === 'user' && message.genuine) {
+      if (!first) first = message.text;
+      lastUser = message.text;
+    } else if (message.role === 'assistant') {
+      lastAssistant = message.text;
+    }
+  }
+
+  const finish = (text: string): string => {
+    const stripped = stripInjected(text).trim();
+    return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;
+  };
+
+  return {
+    firstPrompt: first ? clean(first) : '',
+    closingUser: finish(lastUser),
+    closingAssistant: finish(stripInsightFences(lastAssistant)),
+  };
+}
+
+/**
  * Last user message and last assistant message from a session, stripped of
  * injected tags and truncated to CLOSING_MAX. Both roles are returned so the
  * synthesis layer (Phase 2) can decide what the open thread is — the last
  * assistant turn alone is often a question or tool call, not an outcome.
  */
 export function closingMessages(lines: string[], tool: Tool): { user: string; assistant: string } {
-  const genuineUsers = genuineUserTexts(lines, tool);
-  const user = genuineUsers.length ? genuineUsers[genuineUsers.length - 1]! : '';
-
-  const messages = getSessionMessages(lines);
-  let assistant = '';
-  for (let i = messages.length - 1; i >= 0 && !assistant; i--) {
-    if (messages[i]!.role === 'assistant') assistant = messages[i]!.text;
-  }
-
-  const finish = (t: string): string => {
-    const stripped = stripInjected(t).trim();
-    return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;
-  };
-  return { user: finish(user), assistant: finish(stripInsightFences(assistant)) };
+  void tool; // Retained for API compatibility; extraction is format-aware by record shape.
+  const summary = summarizeMessages(extractMessages(lines));
+  return { user: summary.closingUser, assistant: summary.closingAssistant };
 }
 
 export function findMatchContext(lines: string[], query: string): string {

@@ -12,11 +12,90 @@ import {
   getCwdFromSession,
   sessionBranch,
   closingMessages,
+  extractSessionMetadata,
+  summarizeMessages,
 } from './parser';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
+
+describe('extractSessionMetadata', () => {
+  test('matches the individual Claude metadata helpers in one pass', () => {
+    const lines = jsonl(
+      {
+        type: 'user',
+        cwd: '/repo',
+        timestamp: '2026-03-15T10:00:00Z',
+        gitBranch: 'main',
+        message: { content: 'hello' },
+      },
+      { type: 'custom-title', customTitle: 'First title', timestamp: 'not-a-date' },
+      {
+        type: 'assistant',
+        cwd: '/repo',
+        timestamp: '2026-03-17T10:00:00Z',
+        gitBranch: 'feature',
+        message: { content: [{ type: 'text', text: 'done' }] },
+      },
+      { type: 'custom-title', customTitle: 'Final title' },
+    );
+
+    expect(extractSessionMetadata(lines, 'claude')).toEqual({
+      cwd: getCwdFromSession(lines, 'claude'),
+      customTitle: customTitle(lines),
+      date: lastTimestamp(lines),
+      createdAt: firstTimestamp(lines),
+      messageCount: messageCount(lines),
+      branch: sessionBranch(lines, 'claude'),
+    });
+  });
+
+  test('extracts Codex cwd and starting branch from session_meta', () => {
+    const lines = jsonl(
+      {
+        type: 'session_meta',
+        timestamp: '2026-04-01T09:00:00Z',
+        payload: { cwd: '/codex-repo', git: { branch: 'perf/index' } },
+      },
+      {
+        type: 'message',
+        timestamp: '2026-04-02T09:00:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'ready' }] },
+      },
+    );
+
+    expect(extractSessionMetadata(lines, 'codex')).toMatchObject({
+      cwd: '/codex-repo',
+      date: '2026-04-02',
+      createdAt: '2026-04-01',
+      messageCount: 1,
+      branch: 'perf/index',
+    });
+  });
+});
+
+test('summarizeMessages reuses extracted messages without changing prompt or closing semantics', () => {
+  const lines = jsonl(
+    {
+      type: 'user',
+      promptSource: 'typed',
+      message: { content: '<system-reminder>noise</system-reminder> build the index' },
+    },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } },
+    {
+      type: 'user',
+      promptSource: null,
+      message: { content: 'Base directory for this skill: /tmp/skill\ninjected body' },
+    },
+    { type: 'user', promptSource: 'typed', message: { content: 'is it done?' } },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'yes, it is done' }] } },
+  );
+
+  const summary = summarizeMessages(extractMessages(lines));
+  expect(summary.firstPrompt).toBe(firstPrompt(lines, 'claude'));
+  expect({ user: summary.closingUser, assistant: summary.closingAssistant }).toEqual(closingMessages(lines, 'claude'));
+});
 
 describe('customTitle', () => {
   test('returns empty string when no custom-title row exists', () => {

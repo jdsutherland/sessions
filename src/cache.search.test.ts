@@ -279,6 +279,35 @@ test('re-index idempotency: an mtime touch leaves no duplicate message rows', as
   expect(r.find((x) => x.sessionId === 'c')!.messageHits).toHaveLength(1);
 });
 
+test('concurrent refreshes coalesce instead of nesting transactions or duplicating work', async () => {
+  const future = new Date(Date.now() + 10_000);
+  utimesSync(cPath(), future, future);
+
+  const results = await Promise.all(Array.from({ length: 8 }, () => cache.refreshIndex()));
+  expect(results.every((result) => result.updated === 1)).toBe(true);
+  expect(messageRowCount(cPath())).toBe(2);
+});
+
+test('unchanged invalid transcripts are tracked in the negative inventory cache', async () => {
+  const path = join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'ignored.jsonl');
+  writeFileSync(path, JSON.stringify({ type: 'user', timestamp: '2026-06-06T12:00:00Z' }));
+
+  await cache.refreshIndex();
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    const row = db
+      .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
+      .get(path);
+    expect(row?.size).toBeGreaterThan(0);
+  } finally {
+    db.close();
+  }
+
+  expect((await cache.refreshIndex()).updated).toBe(0);
+  rmSync(path);
+  await cache.refreshIndex();
+});
+
 test('pruning: deleting the file empties both FTS tables for it', async () => {
   const path = cPath();
   rmSync(path);
