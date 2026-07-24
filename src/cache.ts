@@ -16,18 +16,7 @@ import {
   type ContextHeadline,
   type MessageHit,
 } from './types';
-import {
-  getCwdFromSession,
-  extractMessages,
-  firstPrompt,
-  lastTimestamp,
-  getSessionMessages,
-  customTitle,
-  firstTimestamp,
-  messageCount,
-  closingMessages,
-  sessionBranch,
-} from './parser';
+import { extractMessages, getSessionMessages, extractSessionMetadata, summarizeMessages } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
@@ -77,6 +66,14 @@ function getCodexDir(): string {
 // as genuine user turns — see isGenuineUserTurn/stripInjected in parser.ts.
 const SCHEMA_VERSION = 8;
 let _db: Database | null = null;
+let _refreshPromise: Promise<RefreshResult> | null = null;
+let _lastRefreshAt = 0;
+let _lastRefreshResult: RefreshResult = { total: 0, updated: 0 };
+
+interface RefreshResult {
+  total: number;
+  updated: number;
+}
 
 export function clearCache(): void {
   const dbPath = getDbPath();
@@ -99,6 +96,11 @@ export function closeDb(): void {
     _db?.close();
   } catch {}
   _db = null;
+  // Drop the in-flight refresh too: it targets the handle we just closed, so a
+  // later ensureIndexFresh must start a new scan rather than join a doomed one.
+  _refreshPromise = null;
+  _lastRefreshAt = 0;
+  _lastRefreshResult = { total: 0, updated: 0 };
   closeOpencodeDb();
 }
 
@@ -118,6 +120,7 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS sessions');
     db.run('DROP TABLE IF EXISTS session_fts');
     db.run('DROP TABLE IF EXISTS message_fts');
+    db.run('DROP TABLE IF EXISTS ignored_files');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -170,6 +173,16 @@ function openDb(): Database {
       role UNINDEXED,
       text,
       tokenize = 'porter unicode61'
+    )
+  `);
+  // Negative inventory cache: malformed/empty transcripts and explicitly
+  // excluded worktree logs otherwise look "new" on every refresh and get parsed
+  // forever. The mtime+size signal makes them candidates again if they change.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS ignored_files (
+      file_path TEXT PRIMARY KEY,
+      mtime REAL NOT NULL,
+      size INTEGER NOT NULL
     )
   `);
   return db;
@@ -299,6 +312,11 @@ function collectSubagentText(filePath: string, tool: Tool): string {
 }
 
 function indexFile(db: Database, filePath: string, tool: Tool): boolean {
+  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
+  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
+  // this is where we observe that process's completed write (or a transcript
+  // append) and skip the parse. A file that vanished during the wait stats as
+  // null and is left entirely alone — pruning, not ignoring, is its owner.
   const stat = statSession(filePath, tool);
   if (!stat) return false;
 
@@ -309,22 +327,37 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
     return false;
   }
+  const ignored = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
+    .get(filePath);
+  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) {
+    return false;
+  }
+
+  const ignore = (): false => {
+    if (existing) {
+      db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
+      db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
+      db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+    }
+    db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
+      filePath,
+      stat.mtimeMs,
+      stat.size,
+    ]);
+    return false;
+  };
 
   const lines = readSessionLines(filePath, tool);
-  if (lines.length === 0) return false;
+  if (lines.length === 0) return ignore();
 
-  const cwd = getCwdFromSession(lines, tool);
-  if (!cwd) return false;
-  if (cwd.includes('.claude/worktrees') || cwd.includes('/.bare')) return false;
+  const metadata = extractSessionMetadata(lines, tool);
+  if (!metadata.cwd) return ignore();
+  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
 
   const sessionId = basename(filePath).replace('.jsonl', '');
-  const prompt = firstPrompt(lines, tool);
-  const title = customTitle(lines);
-  const date = lastTimestamp(lines);
-  const createdAt = firstTimestamp(lines);
-  const msgCount = messageCount(lines);
-
   const messages = extractMessages(lines);
+  const summary = summarizeMessages(messages);
   const subagentContent = collectSubagentText(filePath, tool);
 
   const filesTouchedArr = extractFiles(lines, tool);
@@ -335,17 +368,15 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const commands = JSON.stringify(commandsArr);
   const errors = extractErrors(lines, tool);
   const thinking = extractThinking(lines, tool);
-  const headline = `${prompt}\n${title}`;
+  const headline = `${summary.firstPrompt}\n${metadata.customTitle}`;
   const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
   const commandsText = commandsArr.join('\n');
   const contextText = errors.messages.join('\n');
-  const closing = closingMessages(lines, tool);
-  const branch = sessionBranch(lines, tool);
-
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
   }
+  db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
     `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -353,22 +384,22 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       filePath,
       stat.mtimeMs,
       stat.size,
-      cwd,
+      metadata.cwd,
       tool,
       sessionId,
-      date,
-      createdAt,
-      prompt,
-      title,
-      msgCount,
+      metadata.date,
+      metadata.createdAt,
+      summary.firstPrompt,
+      metadata.customTitle,
+      metadata.messageCount,
       filesTouched,
       filesRead,
       commands,
       errors.errored ? 1 : 0,
       errors.count,
-      closing.user,
-      closing.assistant,
-      branch,
+      summary.closingUser,
+      summary.closingAssistant,
+      metadata.branch,
     ],
   );
   db.run(
@@ -393,43 +424,123 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   return true;
 }
 
-export async function refreshIndex(): Promise<{ total: number; updated: number }> {
+async function runRefreshIndex(): Promise<RefreshResult> {
   const db = getDb();
-  const files = await discoverFiles();
+  // De-duplicate at the boundary. It also makes the set/map work below line up
+  // exactly with the total reported to callers.
+  const files = [...new Map((await discoverFiles()).map((file) => [file.path, file])).values()];
   const filePaths = new Set(files.map((f) => f.path));
 
-  const dbPaths = db.query<{ file_path: string }, []>('SELECT file_path FROM sessions').all();
-  const removedPaths = dbPaths.filter((r) => !filePaths.has(r.file_path));
+  // Fetch the current inventory once. The old path issued SELECT mtime,size once
+  // per discovered file (~4,500 statements on the author's corpus) even when no
+  // transcript had changed.
+  const dbRows = db
+    .query<{ file_path: string; mtime: number; size: number }, []>('SELECT file_path, mtime, size FROM sessions')
+    .all();
+  const indexedByPath = new Map(dbRows.map((row) => [row.file_path, row]));
+  const ignoredRows = db
+    .query<{ file_path: string; mtime: number; size: number }, []>('SELECT file_path, mtime, size FROM ignored_files')
+    .all();
+  const ignoredByPath = new Map(ignoredRows.map((row) => [row.file_path, row]));
+  const inventoryPaths = new Set([...indexedByPath.keys(), ...ignoredByPath.keys()]);
+  const removedPaths = [...inventoryPaths].filter((path) => !filePaths.has(path));
   if (removedPaths.length > 0) {
-    for (const r of removedPaths) {
-      db.run('DELETE FROM sessions WHERE file_path = ?', [r.file_path]);
-      db.run('DELETE FROM session_fts WHERE file_path = ?', [r.file_path]);
-      db.run('DELETE FROM message_fts WHERE file_path = ?', [r.file_path]);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const path of removedPaths) {
+        db.run('DELETE FROM sessions WHERE file_path = ?', [path]);
+        db.run('DELETE FROM session_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM message_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM ignored_files WHERE file_path = ?', [path]);
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
     if (removedPaths.length > 100) {
       db.exec('VACUUM');
     }
   }
 
+  // Stat source files before opening a write transaction, then transact only
+  // candidates whose invalidation signal differs. indexFile re-checks after
+  // BEGIN IMMEDIATE so a second MCP process that refreshed first makes this one
+  // skip the expensive parse instead of duplicating it or racing a write lock.
+  const candidates: FileEntry[] = [];
+  for (const file of files) {
+    const stat = statSession(file.path, file.tool);
+    if (!stat) continue;
+    const existing = indexedByPath.get(file.path);
+    const ignored = ignoredByPath.get(file.path);
+    const indexedMatches = existing && existing.mtime === stat.mtimeMs && existing.size === stat.size;
+    const ignoredMatches = ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size;
+    if (!indexedMatches && !ignoredMatches) {
+      candidates.push(file);
+    }
+  }
+
   let updated = 0;
   const BATCH = 200;
-  for (let i = 0; i < files.length; i += BATCH) {
-    const batch = files.slice(i, i + BATCH);
-    db.exec('BEGIN');
-    for (const f of batch) {
-      if (indexFile(db, f.path, f.tool)) updated++;
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    const batch = candidates.slice(i, i + BATCH);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const file of batch) {
+        if (indexFile(db, file.path, file.tool)) updated++;
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
     }
-    db.exec('COMMIT');
   }
 
   return { total: files.length, updated };
+}
+
+/**
+ * Force a source scan, coalescing concurrent callers in this process onto one
+ * pass. Every query/MCP entry point goes through ensureIndexFresh instead, so
+ * today this is reached only by tests — it stays exported as the "scan now" seam
+ * for an explicit rebuild command.
+ *
+ * Coalescing weakens "scan now" for a caller that arrives mid-flight: it joins a
+ * pass whose file list was snapshotted before the caller's own write, so it may
+ * not observe that write. Anything needing a guaranteed post-write scan must run
+ * after the in-flight promise settles, not alongside it.
+ */
+export async function refreshIndex(): Promise<RefreshResult> {
+  if (_refreshPromise) return _refreshPromise;
+
+  const promise = runRefreshIndex();
+  _refreshPromise = promise;
+  try {
+    const result = await promise;
+    _lastRefreshAt = Date.now();
+    _lastRefreshResult = result;
+    return result;
+  } finally {
+    if (_refreshPromise === promise) _refreshPromise = null;
+  }
+}
+
+function refreshIntervalMs(): number {
+  const configured = Number(process.env.SESSIONS_REFRESH_INTERVAL_MS ?? 5_000);
+  return Number.isFinite(configured) ? Math.max(0, configured) : 5_000;
+}
+
+async function ensureIndexFresh(): Promise<RefreshResult> {
+  if (_refreshPromise) return _refreshPromise;
+  if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
+  return refreshIndex();
 }
 
 // Read-only index access for stats consumers (`sessions wrapped`). Refreshes
 // first so queries see current transcripts, then hands back the shared handle.
 // Callers must treat the connection as read-only — all writes stay in this file.
 export async function getIndexDb(): Promise<Database> {
-  await refreshIndex();
+  await ensureIndexFresh();
   return getDb();
 }
 
@@ -445,7 +556,7 @@ export interface SearchOptions {
 
 export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
 
   const toolFilter = opts.tool ?? '';
   const project = opts.project ?? '';
@@ -710,7 +821,7 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
   if (!pattern) throw new Error('Empty pattern: pass a non-empty string to search for.');
 
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
 
   const ignoreCase = opts.ignoreCase ?? true;
   // Guard against fractional/negative limits so `hits.length < limit` behaves as a
@@ -822,7 +933,7 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
  */
 export async function resolveSessionFile(sessionId: string): Promise<string | null> {
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
   const row = db
     .query<{ file_path: string }, [string]>(
       'SELECT file_path FROM sessions WHERE session_id = ? ORDER BY mtime DESC LIMIT 1',
@@ -909,7 +1020,7 @@ export async function getActivityDigest(
   detail: DigestDetail = 'compact',
 ): Promise<ActivityDigest> {
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
 
   const rows = queryDateRange(db, startDate, endDate, toolFilter, project);
 
@@ -1001,7 +1112,7 @@ export async function getSessionMetrics(
   project: string,
 ): Promise<SessionMetrics> {
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
 
   const rows = queryDateRange(db, startDate, endDate, toolFilter, project);
 
@@ -1098,7 +1209,7 @@ function parseFiles(json: string): string[] {
  */
 export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Promise<ContextPrimer> {
   const db = getDb();
-  await refreshIndex();
+  await ensureIndexFresh();
 
   const limit = opts.limit ?? 10;
   const headlineCap = opts.headlineCap ?? 40;
