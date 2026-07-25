@@ -21,7 +21,6 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@letta-ai/trajectory": "^0.2.0",
     "@types/bun": "latest",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.62.0"

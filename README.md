@@ -300,7 +300,7 @@ Step 3's existence check matters: `claude -c` starts MCP servers with a pre-resu
 
 ## Exporting trajectories
 
-`sessions export` writes sessions as [trajectory-v1](https://github.com/letta-ai/trajectory) documents — one JSON document per line, so a whole selection streams as one payload.
+`sessions export` writes sessions as trajectory-v1 documents — one JSON document per line, so a whole selection streams as one payload. The types are hand-written from the published schema; the binary carries no dependency for this.
 
 ```sh
 sessions export <session>                    # one session: a file path or a session id
@@ -443,12 +443,9 @@ bun run format:check         # Check formatting without writing
 bun test                     # Run the test suite
 ```
 
-Two opt-in differential suites are skipped by default because their corpus is
-not the repo's: `SESSIONS_DIFFERENTIAL=1` re-parses every transcript on this
-machine, and `SESSIONS_ORACLE=1` checks the trajectory export against
-`@letta-ai/trajectory`'s own normalizer over the committed fixtures. That
-package is a devDependency oracle — the export has hand-written types and the
-compiled binary carries no dependency on it.
+One opt-in differential suite is skipped by default because its corpus is not
+the repo's: `SESSIONS_DIFFERENTIAL=1` re-parses every transcript on this machine
+and asserts the record produces the same messages the old parser did.
 
 ### Cross-compilation
 

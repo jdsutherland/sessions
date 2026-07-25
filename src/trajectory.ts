@@ -7,10 +7,9 @@ import { getRepoRoot } from './cli';
 import { writeStdoutFully } from './stdout';
 import { type Tool } from './types';
 
-// trajectory-v1 (Letta) as a LOSSY PROJECTION of the record — never a parse target.
-// The types below are hand-written from schema/trajectory-v1.schema.json so nothing
-// the compiled binary carries depends on @letta-ai/trajectory; the package is a
-// devDependency oracle only (see src/trajectory.differential.test.ts).
+// trajectory-v1 as a LOSSY PROJECTION of the record — never a parse target. The
+// types below are hand-written from the published schema, and stay that way: this
+// tool owes the format an accurate document, not a dependency.
 //
 // What the record has and trajectory-v1 does not: `index` (the msg_index invariant),
 // `genuine` (injection/compaction semantics), `usage`, per-result `isError`, and

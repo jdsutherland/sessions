@@ -20,7 +20,7 @@ import {
 // returns [] for every real rollout, while extract-files/extract-commands DID learn that
 // shape, so branch and files populate normally and mask the hole.
 //
-// A SessionRecord is a superset of Letta's trajectory-v1, and trajectory-v1 is a lossy
+// A SessionRecord is a superset of trajectory-v1, and trajectory-v1 is a lossy
 // projection of it — never the parse target. Three fields are ours and cannot come from
 // theirs: `index` (dense and stable, the msg_index ↔ get_session_messages invariant),
 // `genuine` (promptSource / compaction / injection semantics that first_prompt,

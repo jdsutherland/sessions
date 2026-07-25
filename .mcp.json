@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sessions-local": {
+      "command": "bun",
+      "args": ["run", "index.ts", "--mcp"]
+    }
+  }
+}
