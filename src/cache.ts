@@ -31,7 +31,7 @@ import { readLessonsForRepo, LESSON_LIMIT } from './memory';
 // Source/cache locations live in src/paths.ts — every one honors a SESSIONS_* env
 // override so tests can point the index at hermetic temp fixtures. Re-exported
 // because the pricing cache and the test harness reference them by these names.
-import { getCacheDir, getDbPath, getClaudeDir, getPiDir, getCodexDir } from './paths';
+import { getCacheDir, getDbPath, getEventCachePath, getClaudeDir, getPiDir, getCodexDir } from './paths';
 export { getCacheDir, getDbPath };
 
 // Bump 6 -> 7: search becomes message-granular. A new message_fts table holds one
@@ -74,7 +74,10 @@ interface RefreshResult {
 
 export function clearCache(): void {
   const dbPath = getDbPath();
-  const files = [dbPath, dbPath + '-wal', dbPath + '-shm'];
+  // The parsed-event cache is a rebuildable projection of the same transcripts, so it goes
+  // with the index rather than surviving a --clear-cache that was meant to reset everything.
+  const eventPath = getEventCachePath();
+  const files = [dbPath, dbPath + '-wal', dbPath + '-shm', eventPath, eventPath + '-wal', eventPath + '-shm'];
   let cleared = false;
   for (const f of files) {
     try {

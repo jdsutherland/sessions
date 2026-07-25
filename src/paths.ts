@@ -43,6 +43,12 @@ export function getDbPath(): string {
   return join(getCacheDir(), 'index.db');
 }
 
+/** Parsed usage events, keyed by transcript mtime+size. Rebuildable from the transcripts,
+ *  like everything else under the cache dir. */
+export function getEventCachePath(): string {
+  return join(getCacheDir(), 'usage-events.db');
+}
+
 // Source-session roots. Read-only inputs: we index them, we never write them.
 export function getClaudeDir(): string {
   return process.env.SESSIONS_CLAUDE_DIR || join(getHome(), '.claude/projects');

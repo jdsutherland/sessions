@@ -8,10 +8,10 @@ import { gatherEvents } from './extract.ts';
 
 /** The dedupe spans files, so it lives in gatherEvents — assert it where it runs. */
 const claudeEvents = (root: string) =>
-  gatherEvents(
-    { claudeCode: root, pi: join(root, 'no-pi'), codex: join(root, 'no-codex') },
-    { tools: new Set(['claude-code']) },
-  );
+  gatherEvents({
+    roots: { claudeCode: root, pi: join(root, 'no-pi'), codex: join(root, 'no-codex') },
+    tools: new Set(['claude-code']),
+  });
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-parsers-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));

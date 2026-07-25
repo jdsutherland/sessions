@@ -6,6 +6,7 @@ import { parsePiFile } from './parsers/pi.ts';
 import { parseCodexFile } from './parsers/codex.ts';
 import { parseOpencode } from './parsers/opencode.ts';
 import { walkJsonl } from './parsers/util.ts';
+import { openEventCache, type EventCache } from './event-cache.ts';
 import { getOpencodeDbPath } from '../opencode.ts';
 import { getClaudeDir, getPiDir, getCodexDir } from '../paths.ts';
 
@@ -48,9 +49,17 @@ const FILE_PARSERS: Record<'claude-code' | 'pi' | 'codex', (path: string) => Pro
 };
 
 export interface GatherOptions {
+  /** Where to read from. Defaults to the real per-tool roots; supplying it is the test seam. */
+  roots?: ReportRoots;
   tools?: Set<ToolId>;
   /** Skip transcripts last written before this epoch-ms instant. See mtimeFloor. */
   since?: number;
+  /**
+   * Read and write parsed events through the on-disk cache (src/report/event-cache.ts).
+   * Defaults on for the real roots and off for supplied ones: the cache lives in the shared
+   * cache dir and holds a projection of the user's corpus, which a temp fixture is not.
+   */
+  cache?: boolean;
 }
 
 // The widest UTC offset is ±14h, and a local calendar day is 24h wide, so a window that
@@ -91,26 +100,55 @@ export async function sourceFiles(root: string, since?: number): Promise<SourceF
   return stats.filter((s): s is SourceFile => s !== null);
 }
 
-async function gatherTool(tool: 'claude-code' | 'pi' | 'codex', root: string, since?: number): Promise<UsageEvent[]> {
+async function gatherTool(
+  tool: 'claude-code' | 'pi' | 'codex',
+  root: string,
+  since: number | undefined,
+  cache: EventCache | null,
+  seen: string[],
+): Promise<UsageEvent[]> {
   const files = await sourceFiles(root, since);
   const parse = FILE_PARSERS[tool];
   const events: UsageEvent[] = [];
-  for (const file of files) events.push(...(await parse(file.path)));
+  for (const file of files) {
+    seen.push(file.path);
+    const cached = cache?.get(file.path, file.mtimeMs, file.size);
+    if (cached) {
+      events.push(...cached);
+      continue;
+    }
+    const parsed = await parse(file.path);
+    cache?.put(file.path, file.mtimeMs, file.size, parsed);
+    events.push(...parsed);
+  }
   return events;
 }
 
-export async function gatherEvents(
-  roots: ReportRoots = defaultRoots(),
-  opts: GatherOptions = {},
-): Promise<UsageEvent[]> {
+export async function gatherEvents(opts: GatherOptions = {}): Promise<UsageEvent[]> {
+  const roots = opts.roots ?? defaultRoots();
   const want = (t: ToolId): boolean => !opts.tools || opts.tools.has(t);
+  const cache = (opts.cache ?? !opts.roots) ? openEventCache() : null;
+  // Every transcript this scan looked at. Only a scan of every root with no floor and no
+  // tool filter has seen them all, and only that scan may conclude the rest are gone.
+  const seen: string[] = [];
+  const full = opts.since === undefined && !opts.tools;
+
   const tasks: Promise<UsageEvent[]>[] = [];
   // Claude's dedupe spans files, so it runs over the tool's whole result — not per file,
   // and not over the other tools' events, which carry no dedupeKey.
-  if (want('claude-code')) tasks.push(gatherTool('claude-code', roots.claudeCode, opts.since).then(dedupeClaude));
-  if (want('pi')) tasks.push(gatherTool('pi', roots.pi, opts.since));
-  if (want('codex')) tasks.push(gatherTool('codex', roots.codex, opts.since));
+  if (want('claude-code')) {
+    tasks.push(gatherTool('claude-code', roots.claudeCode, opts.since, cache, seen).then(dedupeClaude));
+  }
+  if (want('pi')) tasks.push(gatherTool('pi', roots.pi, opts.since, cache, seen));
+  if (want('codex')) tasks.push(gatherTool('codex', roots.codex, opts.since, cache, seen));
+  // OpenCode reads one SQLite DB rather than a tree of files, so there is nothing to key a
+  // per-file cache on; its whole-DB query is milliseconds anyway.
   if (want('opencode') && roots.opencode) tasks.push(parseOpencode(roots.opencode));
-  const results = await Promise.all(tasks);
-  return results.flat();
+
+  try {
+    const results = await Promise.all(tasks);
+    return results.flat();
+  } finally {
+    cache?.close(full ? seen : undefined);
+  }
 }

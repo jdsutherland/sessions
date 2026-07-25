@@ -180,7 +180,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
   const roots = opts.roots ?? defaultRoots();
   // A year is still a window: transcripts last written before it opened hold nothing in it.
-  const events = await gatherEvents(roots, { tools, since: mtimeFloor(from) });
+  const events = await gatherEvents({ roots: opts.roots, tools, since: mtimeFloor(from) });
   // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
   // projects) is computed from the SAME events as `sessions report` so the two
   // reconcile exactly — automated eval/tmp runs cost real money and belong in the

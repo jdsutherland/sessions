@@ -32,7 +32,7 @@ const roots = { claudeCode: claudeDir, pi: join(tmp, 'no-pi'), codex: join(tmp, 
 
 describe('gatherEvents', () => {
   test('parses claude events and skips missing tool dirs', async () => {
-    const events = await gatherEvents(roots);
+    const events = await gatherEvents({ roots });
     expect(events.length).toBe(1);
     const e = events[0]!;
     expect(e.tool).toBe('claude-code');
@@ -44,16 +44,16 @@ describe('gatherEvents', () => {
   });
 
   test('honors the tools filter', async () => {
-    const events = await gatherEvents(roots, { tools: new Set(['pi']) });
+    const events = await gatherEvents({ roots, tools: new Set(['pi']) });
     expect(events.length).toBe(0);
   });
 });
 
 describe('the mtime prune', () => {
   test('skips transcripts last written before the window, and reads the ones after', async () => {
-    const before = await gatherEvents(roots, { since: Date.now() + 60_000 });
+    const before = await gatherEvents({ roots, since: Date.now() + 60_000 });
     expect(before.length).toBe(0);
-    const after = await gatherEvents(roots, { since: Date.now() - 60_000 });
+    const after = await gatherEvents({ roots, since: Date.now() - 60_000 });
     expect(after.length).toBe(1);
   });
 
