@@ -21,6 +21,7 @@ function transcripts(root: string): string[] {
 }
 
 const read = (p: string): string[] => readFileSync(p, 'utf-8').trimEnd().split('\n');
+const j = (o: unknown): string => JSON.stringify(o);
 const records = (p: string, tool: Tool): SessionRecord[] => parseSession(read(p), tool);
 
 /** The numbering-bearing fields — what must not move for any already-indexed tool. */
@@ -125,6 +126,33 @@ describe('codex', () => {
     // but the fallback ran, rather than the join marking everything false by default.
     expect(users.every((r) => /^(<user_action|<turn_aborted)/.test(r.text.trim()))).toBe(true);
     expect(users.filter((r) => r.genuine).length).toBe(0);
+  });
+
+  // Two rollouts on this machine carry a harness warning on a user-role line, and both
+  // happen to resolve correctly today because a real turn precedes it. Constructed here
+  // because the failing shape — no user_message events to join against, and the warning
+  // first — is the one the corpus does not happen to contain.
+  test('a harness warning never becomes the prompt', () => {
+    const warning =
+      'Warning: apply_patch was requested via exec_command; use the apply_patch tool instead. The patch was applied anyway.';
+    const lines = [
+      j({ type: 'session_meta', timestamp: '2026-06-01T10:00:00Z', payload: { id: 's1', cwd: '/repo' } }),
+      j({
+        type: 'response_item',
+        timestamp: '2026-06-01T10:00:01Z',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: warning }] },
+      }),
+      j({
+        type: 'response_item',
+        timestamp: '2026-06-01T10:00:02Z',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'patched' }] },
+      }),
+    ];
+    const rs = parseSession(lines, 'codex');
+    const users = rs.filter((r) => r.role === 'user');
+    expect(users.length).toBe(1);
+    expect(users[0]!.genuine).toBe(false);
+    expect(summarizeMessages(toMessages(rs)).firstPrompt).toBe('');
   });
 
   test('first_prompt is non-blank — 292 of 292 indexed Codex sessions were empty', () => {

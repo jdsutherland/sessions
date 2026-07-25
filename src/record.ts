@@ -432,9 +432,18 @@ function parseOpencode(lines: string[]): SessionRecord[] {
  * Text that arrives on a user-role line but is not the human speaking. Codex has no
  * promptSource; these prefixes are the shape of every injection observed across 300
  * real rollouts (1,000 user records, 411 of them injections).
+ *
+ * `Warning: ` is the harness scolding itself — "Warning: apply_patch was requested via
+ * exec_command…" — and it is the one prefix that could plausibly open a human turn. It
+ * is still tested before the event_msg join rather than after, because the sessions
+ * that carry it are exactly the ones with no user_message events to join against; a
+ * human who opens with "Warning: " loses first_prompt, and the harness never wins one.
+ *
+ * Exported for src/trajectory.differential.test.ts, which applies this same rule to the
+ * reference normalizer's output — two copies of the list would drift apart silently.
  */
-const CODEX_INJECTED =
-  /^(<environment_context|<user_action|<turn_aborted|<recommended_plugins|<image\b|<skill\b|<user_shell_command|# AGENTS\.md instructions for )/;
+export const CODEX_INJECTED =
+  /^(<environment_context|<user_action|<turn_aborted|<recommended_plugins|<image\b|<skill\b|<user_shell_command|# AGENTS\.md instructions for |Warning: )/;
 
 /** Codex writes two parallel streams; only these belong to the model-facing history. */
 function codexPayload(d: JsonLine, stream: 'response_item' | 'event_msg'): Record<string, unknown> | null {

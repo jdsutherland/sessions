@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { CODEX_INJECTED } from './record';
 import { toTrajectory, type TrajectoryRecord } from './trajectory';
 import type { Tool } from './types';
 
@@ -40,11 +41,9 @@ const fixtures: [string, Tool][] = (['claude', 'codex', 'pi'] as const).flatMap(
   transcripts(join(CAPTURED, tool)).map((p): [string, Tool] => [p, tool]),
 );
 
-// The same rule src/record.ts applies to Codex user-role lines. The reference keeps the
-// AGENTS.md preamble as a user turn; sessions calls it an injection, so the shim applies
-// our rule to their output rather than pretending the disagreement is a bug.
-const INJECTED =
-  /^(<environment_context|<user_action|<turn_aborted|<recommended_plugins|<image\b|<skill\b|<user_shell_command|# AGENTS\.md instructions for )/;
+// CODEX_INJECTED is imported, not restated: the reference keeps the AGENTS.md preamble
+// as a user turn where sessions calls it an injection, so the shim applies OUR rule to
+// their output — and a second copy of the list would drift out of sync with it.
 
 type Role = 'meta' | 'user' | 'reasoning' | 'assistant' | 'assistant-tool-call' | 'tool';
 interface Record_ {
@@ -64,7 +63,7 @@ interface Record_ {
 function shim(records: Record_[]): Record_[] {
   const seen = new Set<string>();
   return records.filter((r) => {
-    if (r.role === 'user') return !INJECTED.test((r.content ?? '').trim());
+    if (r.role === 'user') return !CODEX_INJECTED.test((r.content ?? '').trim());
     if (r.role !== 'reasoning') return true;
     const text = (r.content ?? '').trim();
     if (seen.has(text)) return false;
