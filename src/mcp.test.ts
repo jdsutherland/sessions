@@ -576,3 +576,69 @@ test('a client _meta reaches the tool handler over a real stdio transport', asyn
   expect(payload.provenance).toBe('meta');
   expect(payload.sourceVerified).toBe(true);
 }, 15000);
+
+// get_session_metrics reads the report pipeline, which resolved its roots from a raw
+// homedir() and ignored every SESSIONS_* override — so a sandboxed server answered from
+// the operator's real corpus. Asserted over the wire because that is where it was wrong.
+test('get_session_metrics answers from the sandboxed roots, not the real home', async () => {
+  const home = join(tmp, 'metrics-home');
+  const projects = join(home, 'claude', 'proj');
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, 'usage.jsonl'),
+    j({
+      type: 'assistant',
+      sessionId: 'metrics-1',
+      cwd: '/Users/x/Developer/sandboxed',
+      timestamp: '2026-06-01T14:30:00Z',
+      message: { id: 'msg_1', model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 50 } },
+    }) + '\n',
+  );
+
+  const proc = Bun.spawn([process.execPath, 'run', join(import.meta.dir, '..', 'index.ts'), '--mcp'], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'ignore',
+    env: {
+      ...process.env,
+      SESSIONS_CLAUDE_DIR: join(home, 'claude'),
+      SESSIONS_PI_DIR: join(home, 'pi'),
+      SESSIONS_CODEX_DIR: join(home, 'codex'),
+      SESSIONS_CACHE_DIR: join(home, 'cache'),
+      SESSIONS_OPENCODE_DB: join(home, 'opencode.db'),
+      TIMEZONE: 'UTC',
+    },
+  });
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+
+  const reader = proc.stdout.getReader();
+  await reader.read();
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'get_session_metrics', arguments: { startDate: '2026-06-01', endDate: '2026-06-01' } },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+  const called = new TextDecoder().decode((await reader.read()).value);
+  reader.releaseLock();
+  proc.stdin.end();
+  await proc.exited;
+
+  const body = JSON.parse(called.split('\n').filter(Boolean).pop()!);
+  const metrics = JSON.parse(body.result.content[0].text);
+  expect(metrics.totalSessions).toBe(1);
+  expect(metrics.totalMessages).toBe(1);
+  expect(metrics.projectBreakdown).toEqual([{ project: 'sandboxed', sessions: 1, messages: 1 }]);
+  expect(metrics.activeHours).toEqual({ '14': 1 });
+}, 20000);
