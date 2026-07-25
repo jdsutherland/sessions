@@ -16,7 +16,13 @@ import {
   type ContextHeadline,
   type MessageHit,
 } from './types';
-import { extractMessages, getSessionMessages, extractSessionMetadata, summarizeMessages } from './parser';
+import {
+  extractMessages,
+  getSessionMessages,
+  extractSessionMetadata,
+  summarizeMessages,
+  isHarnessNoise,
+} from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
@@ -25,6 +31,7 @@ import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb 
 import { readSessionLines, statSession } from './session-io';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
+import { isJunkCwd, notJunkCwdSql } from './wrapped/exclude';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -67,7 +74,10 @@ function getCodexDir(): string {
 // v9: extractCommands clips each command to MAX_COMMAND_LEN on the way in, so the
 // stored `commands` column (and its FTS copy) needs a rebuild to shed the 9KB
 // one-liners v8 indexed verbatim.
-const SCHEMA_VERSION = 9;
+// v10: message_fts no longer stores harness bookkeeping rows (transport-error
+// banners, interrupt markers, tool-load acks — see isHarnessNoise in parser.ts),
+// which an existing index still holds as searchable, user-boosted text.
+const SCHEMA_VERSION = 10;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -411,13 +421,17 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   );
   // Message rows: assistant turns always; user turns only when genuine — injected
   // skill bodies and tool results match everything and are exactly the noise the
-  // trust fixes eliminated elsewhere. Their indices are still consumed by the
-  // numbering (extractMessages counts them), they just get no FTS row. db.query()
-  // caches the prepared statement, which matters at ~74 rows/session; the calls run
-  // inside refreshIndex's per-batch transaction, never autocommit.
+  // trust fixes eliminated elsewhere. Harness bookkeeping is dropped from BOTH roles:
+  // the interrupt markers and tool-load acks are user rows that pass isGenuineUserTurn,
+  // so an assistant-only gate would leave the worst offenders in. Their indices are
+  // still consumed by the numbering (extractMessages counts them), they just get no
+  // FTS row. db.query() caches the prepared statement, which matters at ~74
+  // rows/session; the calls run inside refreshIndex's per-batch transaction, never
+  // autocommit.
   const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
   for (const m of messages) {
     if (m.role === 'user' && !m.genuine) continue;
+    if (isHarnessNoise(m.text)) continue;
     insertMessage.run(filePath, m.index, m.role, m.text);
   }
   // Subagent transcripts have no place in the parent's message numbering, so their
@@ -555,6 +569,38 @@ export interface SearchOptions {
    *  Empty array = absent. With no query, filtered results order newest-first (created_at). */
   files?: string[];
   limit?: number;
+  /** Keep automated sessions in the candidate set — eval-harness temp dirs, /tmp
+   *  throwaways, menu-bar probes. Off by default: they are ~43% of a real index and
+   *  are never what a search is looking for. See src/wrapped/exclude.ts. */
+  includeAutomated?: boolean;
+}
+
+/**
+ * Build the FTS5 MATCH expression for a free-text query. Terms are OR-joined: OR
+ * recall (any term may match) paired with bm25() ranking surfaces the sessions
+ * matching the most — and rarest — terms first, instead of the old strict-AND that
+ * returned nothing unless every word was present. This matters most for the LLM/MCP
+ * caller, which issues long natural-language queries.
+ *
+ * A balanced "…" span survives as one FTS5 phrase, so pasting a quoted error string
+ * means that exact sequence rather than an OR of its words. Everything else is split
+ * on whitespace, and every emitted term is re-quoted — that quoting is what keeps
+ * FTS5 operators (NEAR, AND, `*`, `^`, `-`) in unquoted user input literal, so it
+ * must survive any change here. A dangling quote has no closing partner, matches no
+ * span, and falls through to the word split instead of swallowing the query.
+ * Exported for the query-construction tests.
+ */
+export function buildFtsQuery(query: string): string {
+  const terms: string[] = [];
+  const rest = query.replace(/"([^"]+)"/g, (_match, phrase: string) => {
+    const words = phrase.split(/\s+/).filter((w) => w.length > 0);
+    if (words.length > 0) terms.push(`"${words.join(' ')}"`);
+    return ' '; // the span is consumed; leave a separator behind
+  });
+  for (const word of rest.replace(/['"]/g, '').split(/\s+/)) {
+    if (word.length > 0) terms.push(`"${word}"`);
+  }
+  return terms.join(' OR ');
 }
 
 export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
@@ -585,18 +631,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   let rows: SessionRow[];
   const hitsByPath = new Map<string, MessageHit[]>();
 
-  // Split the free-text query into individual quoted terms joined with OR. OR recall
-  // (any term may match) paired with bm25() ranking surfaces the sessions matching the
-  // most — and rarest — terms first, instead of the old strict-AND that returned
-  // nothing unless every word was present. This matters most for the LLM/MCP caller,
-  // which issues long natural-language queries. Quoting each term keeps FTS5 operators
-  // in user input literal. An all-whitespace/quotes query yields no terms → recent list.
-  const ftsTerms = query
-    .replace(/['"]/g, '')
-    .split(/\s+/)
-    .filter((w) => w.length > 0)
-    .map((w) => `"${w}"`);
-  const ftsQuery = ftsTerms.join(' OR ');
+  const ftsQuery = buildFtsQuery(query);
 
   // Both branches filter the sessions table directly with the same conditions.
   const conditions: string[] = [];
@@ -611,6 +646,11 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     conditions.push('(cwd = ? OR cwd GLOB ?)');
     condParams.push(project, globPrefix(project));
   }
+  // Automated sessions are removed from the candidate set, not down-weighted — a
+  // throwaway repro under /tmp can match a query better than the real session did.
+  // The exception is a caller who scoped straight at a junk project: excluding what
+  // they explicitly asked for would be wrong.
+  if (!opts.includeAutomated && !isJunkCwd(project)) conditions.push(notJunkCwdSql('cwd'));
   if (opts.errored) conditions.push('errored = 1');
   // Files filter: substring match over the JSON-array text columns — callers pass a
   // path suffix or full path. Deliberately imprecise (a short fragment can match an
@@ -651,12 +691,14 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       role: string;
       mrank: number;
       msnippet: string;
+      mlen: number;
     }
     const messageRows = db
       .query<MessageHitRow, [string]>(`
       SELECT file_path, msg_index, role,
              bm25(message_fts, 0.0, 0.0, 0.0, 1.0) AS mrank,
-             snippet(message_fts, 3, '', '', '…', 32) AS msnippet
+             snippet(message_fts, 3, '', '', '…', 32) AS msnippet,
+             length(text) AS mlen
       FROM message_fts WHERE message_fts MATCH ?
     `)
       .all(ftsQuery);
@@ -665,13 +707,21 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     // column weights: bm25 can't weight by row, so boost user-turn ranks 1.5× in JS
     // (bm25 is more-negative-is-better; multiplying a negative rank improves it).
     const USER_HIT_BOOST = 1.5;
+    // FTS5's length normalization (b=0.75) is generous enough that a one-line aside
+    // sharing a term outranks the long analysis that actually answers the question.
+    // Scale a hit's rank down toward MIN_DAMPING as its message gets shorter than
+    // SUBSTANTIVE_CHARS — a demotion, not an exclusion, because a short message can
+    // still be the answer ("use the raw body, not the parsed one").
+    const SUBSTANTIVE_CHARS = 240;
+    const MIN_DAMPING = 0.25;
     interface MessageAgg {
       best: number; // best (most negative) weighted rank across the session's hits
       hits: { hit: MessageHit; rank: number }[];
     }
     const msgAgg = new Map<string, MessageAgg>();
     for (const m of messageRows) {
-      const rank = m.role === 'user' ? m.mrank * USER_HIT_BOOST : m.mrank;
+      const damping = Math.max(MIN_DAMPING, Math.min(1, m.mlen / SUBSTANTIVE_CHARS));
+      const rank = (m.role === 'user' ? m.mrank * USER_HIT_BOOST : m.mrank) * damping;
       let agg = msgAgg.get(m.file_path);
       if (!agg) {
         agg = { best: 0, hits: [] };
@@ -711,6 +761,12 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     // matching both sources compounds (both are negative). The display snippet
     // prefers the best message hit (localized — strictly better than a whole-session
     // snippet) and falls back to the session-side snippet for metadata-only matches.
+    //
+    // FOLLOW-UP: the two addends are raw bm25 scores from tables with different
+    // corpus statistics (one row per session vs one row per message, so different N,
+    // avgdl and idf) — adding them is not meaningful, only empirically tuned. Fixing
+    // it means normalizing each side before the sum, which reorders every result, so
+    // it wants its own change measured against docs/eval-baseline.md.
     const merged = [...metaByPath.values()].map((meta) => {
       const s = sessionHitByPath.get(meta.file_path);
       const agg = msgAgg.get(meta.file_path);

@@ -9,8 +9,14 @@
 // This applies to wrapped's CONTENT pass only (the fun story: abandoned projects,
 // drive-bys, word of the year, errors). The spend/volume headline (tokens, cost,
 // sessions, rhythm) is deliberately NOT filtered — it must reconcile with
-// `sessions report`, and automated eval runs still cost real money. `report` and
-// search also see everything, because you might genuinely want to *find* that run.
+// `sessions report`, and automated eval runs still cost real money. `report` sees
+// everything for the same reason.
+//
+// `searchSessions` also uses this rule (see SearchOptions.includeAutomated): junk
+// cwds are ~43% of a real index and are never the session a search is looking for,
+// so they are removed from the candidate set rather than out-ranked. A caller who
+// scopes directly at a junk project still gets it, and `grep_sessions` — exhaustive
+// by contract — never applies the rule at all.
 
 /** Substring the cwd must NOT contain. */
 const JUNK_SUBSTRINGS = [
@@ -37,13 +43,19 @@ export function isJunkCwd(cwd: string | undefined): boolean {
   return false;
 }
 
-/** The same rule as `isJunkCwd`, as a SQL fragment excluding junk rows.
- *  `col` is the qualified cwd column (e.g. `s.cwd`). Emitted with a leading
- *  space and joined by AND so it can be appended straight onto a WHERE clause. */
-export function junkCwdSql(col: string): string {
+/** The same rule as `isJunkCwd`, as a single parenthesized SQL predicate that is
+ *  true for the rows to KEEP. `col` is the qualified cwd column (e.g. `s.cwd`).
+ *  Parenthesized so a caller can AND or OR it into a WHERE clause as one term. */
+export function notJunkCwdSql(col: string): string {
   const clauses: string[] = [];
   for (const s of JUNK_SUBSTRINGS) clauses.push(`${col} NOT LIKE '%' || '${s}' || '%'`);
   for (const p of JUNK_PREFIXES) clauses.push(`${col} NOT LIKE '${p}' || '%'`);
   for (const s of JUNK_SUFFIXES) clauses.push(`${col} NOT LIKE '%' || '${s}'`);
-  return clauses.map((c) => ` AND ${c}`).join('');
+  return `(${clauses.join(' AND ')})`;
+}
+
+/** `notJunkCwdSql` pre-joined with a leading AND, so it can be appended straight
+ *  onto an existing WHERE clause. */
+export function junkCwdSql(col: string): string {
+  return ` AND ${notJunkCwdSql(col)}`;
 }

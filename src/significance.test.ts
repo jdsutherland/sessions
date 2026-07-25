@@ -55,5 +55,20 @@ describe('blended', () => {
     const score = blendedScore({ ...base, messageCount: 50, filesTouchedCount: 5, createdAt: '?' }, now);
     expect(Number.isFinite(score)).toBe(true);
     expect(score).toBeLessThan(0.01);
+    // and the floor must not rescue it — undated stays below anything dated
+    expect(score).toBeLessThan(blendedScore({ ...base, messageCount: 1, createdAt: '2020-01-01' }, now));
+  });
+  test('the decay floor lets substance beat recency once both are outside the window', () => {
+    const now = Date.parse('2026-06-23');
+    const bigOld = { ...base, messageCount: 200, filesTouchedCount: 10, createdAt: '2026-03-25' }; // ~90 days
+    const thinRecent = { ...base, messageCount: 3, filesTouchedCount: 0, createdAt: '2026-06-03' }; // ~20 days
+    // Unfloored, pow(0.5, 90/7) is 1.4e-4 and the 90-day session scores ~0.002.
+    expect(blendedScore(bigOld, now)).toBeGreaterThan(blendedScore(thinRecent, now));
+  });
+  test('inside the window recency still leads: yesterday beats a bigger session from 90 days ago', () => {
+    const now = Date.parse('2026-06-23');
+    const bigOld = { ...base, messageCount: 200, filesTouchedCount: 10, createdAt: '2026-03-25' };
+    const yesterday = { ...base, messageCount: 20, filesTouchedCount: 3, createdAt: '2026-06-22' };
+    expect(blendedScore(yesterday, now)).toBeGreaterThan(blendedScore(bigOld, now));
   });
 });

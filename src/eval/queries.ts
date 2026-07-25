@@ -36,6 +36,14 @@ export interface EvalQuery {
 export const HARNESS_ONLY_TERM = 'investigation';
 
 /**
+ * A term that appears in the corpus only inside s03's harness-noise rows (the
+ * `[Request interrupted by user]` user turn). Nothing may match it: those rows are
+ * denylisted at the message_fts insert, and the user-role ones are the worst
+ * offenders because they also collect the 1.5× user-hit boost.
+ */
+export const NOISE_ONLY_TERM = 'interrupted';
+
+/**
  * Every query has a known-correct answer in `src/eval/__fixtures__`, and every
  * answer has at least one distractor sharing its vocabulary. The `competes` note
  * names the distractor so a future ranking change can be reasoned about rather
@@ -234,6 +242,16 @@ export const QUERIES: EvalQuery[] = [
     opts: { project: '/eval-corpus/billing-worker' },
     forbid: ['s09-customer-undefined-typeerror'],
     competes: 's09 builds invoices but lives in checkout-api-v2',
+  },
+
+  {
+    id: 'scoped-tmp-webhook-scratch',
+    class: 'scoped',
+    query: 'stripe webhook signature verification',
+    expect: ['s21-tmp-webhook-scratch'],
+    opts: { project: '/private/tmp/webhook-scratch' },
+    competes:
+      's21 is a /private/tmp throwaway, removed from every unscoped search — scoping to it directly must bring it back',
   },
 
   // ——— negative: nothing in the corpus answers these ———

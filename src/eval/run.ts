@@ -14,11 +14,11 @@ import { tmpdir } from 'node:os';
 import { searchSessions, refreshIndex, closeDb } from '../cache';
 import { formatResult } from '../search-format';
 import type { SessionResult } from '../types';
-import { HARNESS_ONLY_TERM, QUERIES, type EvalQuery, type QueryClass } from './queries';
+import { HARNESS_ONLY_TERM, NOISE_ONLY_TERM, QUERIES, type EvalQuery, type QueryClass } from './queries';
 
 export const CORPUS_DIR = join(import.meta.dir, '__fixtures__');
 /** Transcripts in the corpus. Asserted, so a fixture that stops parsing is loud. */
-export const CORPUS_SIZE = 20;
+export const CORPUS_SIZE = 21;
 
 /** The k in recall@k — and the page a caller pays for, so payload is measured here too. */
 export const K = 5;
@@ -74,6 +74,8 @@ export interface EvalReport {
   indexed: number;
   /** Hits for HARNESS_ONLY_TERM. Must be 0; see the constant's doc comment. */
   harnessOnlyHits: number;
+  /** Hits for NOISE_ONLY_TERM. Must be 0; see the constant's doc comment. */
+  noiseOnlyHits: number;
 }
 
 /** chars/4, the usual rough token estimate; enough to price a recall gain. */
@@ -176,8 +178,17 @@ export async function runEval(): Promise<EvalReport> {
     const { total } = await refreshIndex();
     const outcomes: QueryOutcome[] = [];
     for (const q of QUERIES) outcomes.push(await runQuery(q));
-    const harness = await searchSessions(HARNESS_ONLY_TERM, { limit: WINDOW });
-    return { outcomes, classes: summarize(outcomes), indexed: total, harnessOnlyHits: harness.length };
+    // Both probes run with includeAutomated so a missing row is proof the text was
+    // never indexed, not just that its session was filtered out by cwd.
+    const harness = await searchSessions(HARNESS_ONLY_TERM, { limit: WINDOW, includeAutomated: true });
+    const noise = await searchSessions(NOISE_ONLY_TERM, { limit: WINDOW, includeAutomated: true });
+    return {
+      outcomes,
+      classes: summarize(outcomes),
+      indexed: total,
+      harnessOnlyHits: harness.length,
+      noiseOnlyHits: noise.length,
+    };
   } finally {
     closeDb();
     rmSync(cacheDir, { recursive: true, force: true });

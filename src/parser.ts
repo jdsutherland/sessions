@@ -230,6 +230,33 @@ function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
   return true;
 }
 
+/**
+ * Rows the CLI writes into the transcript in a conversational role but that are
+ * harness bookkeeping, not conversation: transport-error banners, interrupt
+ * markers, tool-load acks. They are short, so FTS5's length normalization scores
+ * them like a whole analysis, and most are USER rows — so they also collect the
+ * user-hit boost. On the author's index, seven of the top ten hits for "rate
+ * limiting" were `API Error: Rate limit reached`.
+ *
+ * Explicit strings only, deliberately — a length or shape heuristic here would eat
+ * real short messages ("yes, use the raw body"). Extend the lists as new banners
+ * show up; a SCHEMA_VERSION bump republishes the index without them.
+ */
+const NOISE_EXACT = new Set([
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
+  'No response requested.',
+  'Tool loaded.',
+]);
+
+/** The transport-error banner family: `API Error: 401 …`, `API Error: Rate limit reached`, … */
+const NOISE_PREFIXES = ['API Error: '];
+
+export function isHarnessNoise(text: string): boolean {
+  const t = text.trim();
+  return NOISE_EXACT.has(t) || NOISE_PREFIXES.some((p) => t.startsWith(p));
+}
+
 export interface GenuineUserTurn {
   sessionId: string;
   timestamp: string;

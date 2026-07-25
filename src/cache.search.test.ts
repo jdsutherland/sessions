@@ -170,6 +170,131 @@ beforeAll(async () => {
     },
   ]);
 
+  // Session G: a throwaway under /private/tmp — the automated class searchSessions
+  // removes by default. H is the same topic in a real project.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'g', '/private/tmp/scratch-quaxolotl', [
+    {
+      type: 'user',
+      timestamp: '2026-06-07T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'quaxolotl throwaway repro' }] },
+      promptSource: 'typed',
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'h', '/repoH', [
+    {
+      type: 'user',
+      timestamp: '2026-06-08T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'quaxolotl in a real project' }] },
+      promptSource: 'typed',
+    },
+  ]);
+
+  // Session I: harness bookkeeping around one genuine exchange. The interrupt marker
+  // and the tool-load ack carry no promptSource, exactly as Claude writes them, so
+  // they clear the genuine-turn gate and only the noise denylist stops them.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'i', '/repoI', [
+    {
+      type: 'user',
+      timestamp: '2026-06-09T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'flimbertrove the deploy step' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-09T10:01:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-09T10:02:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'Tool loaded.' }] },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-09T10:03:00Z',
+      isApiErrorMessage: true,
+      message: {
+        role: 'assistant',
+        model: '<synthetic>',
+        content: [{ type: 'text', text: 'API Error: Rate limit reached' }],
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-09T10:04:00Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-09T10:05:00Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'the flimbertrove step needed a retry' }] },
+    },
+  ]);
+
+  // Sessions J/K: one term, two message lengths — the short-message damping case.
+  // The term appears only in assistant text, so session_fts contributes nothing and
+  // the ordering is the message rank alone.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'j', '/repoJ', [
+    {
+      type: 'user',
+      timestamp: '2026-06-10T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'quick question' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-10T10:01:00Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'wobblesprocket?' }] },
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'k', '/repoK', [
+    {
+      type: 'user',
+      timestamp: '2026-06-11T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'the long one' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-11T10:01:00Z',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text:
+              'The root cause is that the wobblesprocket is initialized before the configuration ' +
+              'is read, so every downstream consumer sees the default gear ratio instead of the ' +
+              'configured one. Moving the wobblesprocket initializer after the config load fixes ' +
+              'it, and the regression test asserts the ratio the config asked for.',
+          },
+        ],
+      },
+    },
+  ]);
+
+  // Sessions L/M: the same two words, adjacent in L and scattered in M — the phrase
+  // query case.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'l', '/repoL', [
+    {
+      type: 'user',
+      timestamp: '2026-06-12T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'the deploy failed on plumbus grommet timing' }] },
+      promptSource: 'typed',
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'm', '/repoM', [
+    {
+      type: 'user',
+      timestamp: '2026-06-13T10:00:00Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'the plumbus was fine but the grommet needed replacing' }],
+      },
+      promptSource: 'typed',
+    },
+  ]);
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -528,4 +653,85 @@ test('grep: case-insensitive by default, exact when ignoreCase=false', async () 
 
 test('grep: an invalid regex throws a friendly error', async () => {
   await expect(cache.grepSessions('(unclosed', { regex: true })).rejects.toThrow(/Invalid regex/);
+});
+
+// ——— categorical removal + scorer corrections (schema v10) — additive ———
+
+test('automated cwds are removed from search, not merely out-ranked', async () => {
+  const r = await cache.searchSessions('quaxolotl', {});
+  expect(r.map((x) => x.sessionId)).toEqual(['h']); // G lives under /private/tmp
+});
+
+test('a caller scoped straight at an automated project still gets it', async () => {
+  const r = await cache.searchSessions('quaxolotl', { project: '/private/tmp/scratch-quaxolotl' });
+  expect(r.map((x) => x.sessionId)).toEqual(['g']);
+  // and the opt-out returns it unscoped, for callers that want everything
+  const all = await cache.searchSessions('quaxolotl', { includeAutomated: true });
+  expect(all.map((x) => x.sessionId).sort()).toEqual(['g', 'h']);
+});
+
+test('the automated filter applies to the no-query listing too', async () => {
+  const r = await cache.searchSessions('', { limit: 100 });
+  expect(r.map((x) => x.sessionId)).not.toContain('g');
+});
+
+test('grep stays exhaustive: it still reaches an automated cwd', async () => {
+  expect((await cache.grepSessions('quaxolotl', {})).totalSessions).toBe(2);
+});
+
+test('harness noise rows are not searchable in either role', async () => {
+  // 'interrupted' and 'loaded' are user-role banners — the ones that would otherwise
+  // also collect the user-hit boost; 'requested' is the assistant-role one.
+  for (const term of ['interrupted', 'loaded', 'requested']) {
+    const r = await cache.searchSessions(term, {});
+    expect(r.map((x) => x.sessionId)).not.toContain('i');
+  }
+  // the genuine turns around them are untouched
+  const r = await cache.searchSessions('flimbertrove', {});
+  expect(r.map((x) => x.sessionId)).toEqual(['i']);
+  // 1 genuine user turn + 1 real assistant turn; the four banners get no row
+  expect(messageRowCount(join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'i.jsonl'))).toBe(2);
+  // The transport-error banner is also counted as an error, so extractErrors still
+  // copies it into session_fts.context_text and the session stays findable that way —
+  // a metadata match with no message hit. Removing it there is a separate decision:
+  // the same text drives `errored`, error_count and wrapped's error census.
+  const api = (await cache.searchSessions('API Error', {})).find((x) => x.sessionId === 'i');
+  expect(api?.messageHits).toEqual([]);
+});
+
+test('damping: a substantive message outranks a short aside carrying the same term', async () => {
+  const r = await cache.searchSessions('wobblesprocket', {});
+  expect(r.map((x) => x.sessionId)).toEqual(['k', 'j']);
+});
+
+test('phrase query: a quoted span matches the phrase, not an OR of its words', async () => {
+  const loose = await cache.searchSessions('plumbus grommet', {});
+  expect(loose.map((x) => x.sessionId).sort()).toEqual(['l', 'm']);
+  const phrase = await cache.searchSessions('"plumbus grommet"', {});
+  expect(phrase.map((x) => x.sessionId)).toEqual(['l']);
+});
+
+test('buildFtsQuery: quoted spans become phrases, everything else stays a literal term', () => {
+  expect(cache.buildFtsQuery('plumbus grommet')).toBe('"plumbus" OR "grommet"');
+  expect(cache.buildFtsQuery('"plumbus grommet" timing')).toBe('"plumbus grommet" OR "timing"');
+  expect(cache.buildFtsQuery('  "  spaced   out  "  ')).toBe('"spaced out"');
+});
+
+test('buildFtsQuery: FTS5 operators in unquoted input stay literal', () => {
+  expect(cache.buildFtsQuery('plumbus AND grommet*')).toBe('"plumbus" OR "AND" OR "grommet*"');
+  expect(cache.buildFtsQuery('foo NEAR/3 -bar ^baz')).toBe('"foo" OR "NEAR/3" OR "-bar" OR "^baz"');
+});
+
+test('buildFtsQuery: an unbalanced quote degrades to terms instead of swallowing the query', () => {
+  expect(cache.buildFtsQuery('exit "code 1')).toBe('"exit" OR "code" OR "1"');
+  expect(cache.buildFtsQuery('"')).toBe('');
+  expect(cache.buildFtsQuery('""')).toBe('');
+});
+
+test('an FTS5-operator query runs as a literal search instead of erroring', async () => {
+  // "AND" is also an ordinary word, so other sessions legitimately match it — the
+  // point is that the query parses and still finds the two plumbus sessions.
+  const ids = (await cache.searchSessions('plumbus AND grommet*', {})).map((x) => x.sessionId);
+  expect(ids).toContain('l');
+  expect(ids).toContain('m');
 });

@@ -15,6 +15,9 @@ interface RecallFloor {
 // Measured 2026-07-25 against the fixture corpus. recall@5 saturates at this corpus
 // size; recall@1 and MRR are the numbers that move when the ranking constants do.
 // The negative class has no answer to rank, so it has no recall floor — only a ceiling.
+// These floors survived adding s21 (a /private/tmp throwaway) to the corpus only
+// because searchSessions removes junk cwds: unfiltered, s21 takes rank 1 from
+// err-stripe-signature and path-stripe-webhook and both classes drop to 80%/0.90.
 const RECALL_FLOOR: Record<Exclude<QueryClass, 'negative'>, RecallFloor> = {
   'exact-error-string': { recallAt5: 1, recallAt1: 1, mrr: 1 },
   'file-path': { recallAt5: 1, recallAt1: 1, mrr: 1 },
@@ -25,12 +28,12 @@ const RECALL_FLOOR: Record<Exclude<QueryClass, 'negative'>, RecallFloor> = {
 
 /** Serialized chars of the worst top-5 page in each class, as measured. */
 const PAYLOAD_CEILING: Record<QueryClass, number> = {
-  'exact-error-string': 5746,
+  'exact-error-string': 5806,
   'file-path': 933,
-  command: 4215,
+  command: 4332,
   'multi-word-natural-language': 6486,
   scoped: 2169,
-  negative: 5026,
+  negative: 5371,
 };
 
 // What the OR-join returns for queries nothing in the corpus answers. Three of five
@@ -61,6 +64,13 @@ test('corpus integrity: every fixture transcript is indexed', () => {
 
 test('corpus integrity: harness noise rows are not searchable', () => {
   expect(report.harnessOnlyHits).toBe(0);
+});
+
+test('corpus integrity: denylisted harness rows are not searchable in either role', () => {
+  // s03 carries the four banners verbatim, the user-role ones written the way Claude
+  // writes them (no promptSource, so they pass the genuine-turn gate). Dropping the
+  // isHarnessNoise guard at the message_fts insert makes this 1.
+  expect(report.noiseOnlyHits).toBe(0);
 });
 
 test.each(Object.keys(RECALL_FLOOR) as (keyof typeof RECALL_FLOOR)[])('recall ratchet: %s', (cls) => {
