@@ -1,5 +1,24 @@
 export type Tool = 'claude' | 'pi' | 'codex' | 'opencode';
 
+/**
+ * How a lesson's session id was established, most trustworthy first. See
+ * src/provenance.ts for the ladder that produces it.
+ */
+export type Provenance = 'meta' | 'hook' | 'env' | 'deferred' | 'recovered' | 'none';
+
+/** A saved lesson as the primer serves it. */
+export interface ContextLesson {
+  id: number;
+  lesson: string;
+  detail: string;
+  scope: 'repo' | 'global';
+  provenance: Provenance;
+  /** False means unauditable — you cannot open the conversation this came from. */
+  verified: boolean;
+  sessionId: string | null;
+  savedAt: string;
+}
+
 /** A search match localized to one message inside a session. */
 export interface MessageHit {
   /** Message index within the session — feeds get_session_messages(offset) directly. */
@@ -104,5 +123,11 @@ export interface ContextPrimer {
   toolFilter: Tool | '';
   recent: ContextSession[];
   headlines: ContextHeadline[];
+  /** Saved lessons for this repo, repo scope before global. Assertions, not history. */
+  lessons: ContextLesson[];
+  /** Lessons quarantined as conflicting. A count only — a contested belief is never served as fact. */
+  lessonsFlagged: number;
+  /** Active in-scope lessons, so a capped list can say how many it left out. */
+  lessonsTotal: number;
   isEmpty: boolean;
 }

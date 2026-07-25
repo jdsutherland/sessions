@@ -2,7 +2,8 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getMemoryDbPath } from './paths';
-import type { Provenance, SessionProvenance } from './provenance';
+import type { SessionProvenance } from './provenance';
+import type { ContextLesson, Provenance } from './types';
 
 /**
  * The lesson store. Deliberately its own database, outside the cache.
@@ -133,6 +134,10 @@ export function applyMigrations(db: Database, ladder: Migration[] = MIGRATIONS):
 }
 
 let _db: Database | null = null;
+// The path the open handle belongs to. Compared on every call so a changed
+// SESSIONS_MEMORY_DB reopens instead of silently serving the previous file — which
+// is what a test that forgets to close would otherwise get.
+let _dbPath = '';
 let _readonly = false;
 
 function openAt(path: string): Database {
@@ -172,8 +177,9 @@ function quarantine(path: string): string {
  * clean no-op there rather than leaving an empty file behind.
  */
 export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
-  if (_db) return _db;
   const path = getMemoryDbPath();
+  if (_db && _dbPath === path) return _db;
+  if (_db) closeMemoryDb();
   if (!existsSync(path) && !opts.create) return null;
   mkdirSync(dirname(path), { recursive: true });
 
@@ -205,6 +211,7 @@ export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
   }
 
   _db = db;
+  _dbPath = path;
   return db;
 }
 
@@ -213,6 +220,7 @@ export function closeMemoryDb(): void {
     _db?.close();
   } catch {}
   _db = null;
+  _dbPath = '';
   _readonly = false;
 }
 
@@ -285,18 +293,6 @@ function ftsQuery(text: string): string {
     .sort((a, b) => b.length - a.length)
     .slice(0, 20);
   return tokens.map((t) => `"${t}"`).join(' OR ');
-}
-
-export interface ContextLesson {
-  id: number;
-  lesson: string;
-  detail: string;
-  scope: Scope;
-  provenance: Provenance;
-  /** False means the lesson is unauditable — you cannot open the conversation it came from. */
-  verified: boolean;
-  sessionId: string | null;
-  savedAt: string;
 }
 
 export interface RepoLessons {

@@ -1,18 +1,15 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getClaudeDir, getCodexDir, getHandoffDir } from './paths';
-import type { Tool } from './types';
+import type { Provenance, Tool } from './types';
 
-/**
- * How a lesson's session id was established, most trustworthy first:
- *  meta      — the client stated it on the tool call itself (Codex)
- *  hook      — the SessionStart hook handed it over, transcript confirmed
- *  env       — inherited from the environment AND confirmed on disk
- *  deferred  — no session id, but a tool-use id that `sessions lessons audit` can trace
- *  recovered — a deferred row the audit resolved after the fact
- *  none      — nothing identifying reached us
- */
-export type Provenance = 'meta' | 'hook' | 'env' | 'deferred' | 'recovered' | 'none';
+// The Provenance values this file produces:
+//  meta      — the client stated the session id on the tool call itself (Codex)
+//  hook      — the SessionStart hook handed it over, transcript confirmed
+//  env       — inherited from the environment AND confirmed on disk
+//  deferred  — no session id, but a tool-use id that `sessions lessons audit` can trace
+//  none      — nothing identifying reached us
+// 'recovered' is written by the audit, not here.
 
 export interface SessionProvenance {
   sessionId: string | null;

@@ -28,6 +28,7 @@ let dir: string;
 
 function setEnv(): void {
   process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
+  process.env.SESSIONS_MEMORY_DB = join(tmp, 'memory.db'); // absent → the primer reads no lessons
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');

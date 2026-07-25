@@ -9,6 +9,8 @@ export interface RepoInfo {
   currentWorktree: string;
   /** Live worktree path → branch label, from `git worktree list --porcelain`. */
   branches: Map<string, string>;
+  /** Normalized origin URL, or '' when there is no origin. The only repo key that survives a move. */
+  remote: string;
 }
 
 function git(cwd: string, args: string[]): { ok: boolean; out: string } {
@@ -34,6 +36,24 @@ function deriveContainer(gitCommonDir: string, toplevel: string): string {
     return dirname(gitCommonDir);
   }
   return toplevel;
+}
+
+/**
+ * Collapse an origin URL to a comparable key: scheme, user, `.git`, and trailing
+ * slashes come off, and scp-style `host:path` becomes `host/path`. So
+ * `git@github.com:nicknisi/sessions.git` and `https://github.com/nicknisi/sessions`
+ * are one repo — which is what keeps a lesson attached after the checkout moves.
+ */
+export function normalizeRemote(url: string): string {
+  let s = url.trim();
+  if (!s) return '';
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  s = s.replace(/^[^/@]+@/, '');
+  // `host:path` → `host/path`, but leave `host:22/path` alone.
+  s = s.replace(/^([^/:]+):(?!\d+\/)/, '$1/');
+  s = s.replace(/\.git$/i, '');
+  s = s.replace(/\/+$/, '');
+  return s.toLowerCase();
 }
 
 /** Resolve the repo container + cwd→branch map, or `null` when `cwd` is not in a git repo. */
@@ -66,7 +86,10 @@ export function resolveRepo(cwd: string): RepoInfo | null {
     }
   }
 
-  return { gitCommonDir, container, currentWorktree, branches };
+  const origin = git(cwd, ['config', '--get', 'remote.origin.url']);
+  const remote = origin.ok ? normalizeRemote(origin.out) : '';
+
+  return { gitCommonDir, container, currentWorktree, branches, remote };
 }
 
 /** Boundary-aware containment: true iff `cwd` is `root` or a descendant of `root`. */

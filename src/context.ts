@@ -1,6 +1,8 @@
 import { writeFile } from 'node:fs/promises';
 import { resolveRepo } from './repo';
 import { getContextPrimer } from './cache';
+import { LESSON_HOOK_LIMIT } from './memory';
+import { writeHandoff } from './provenance';
 import type { ContextPrimer, Tool } from './types';
 
 const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi', 'opencode']);
@@ -118,8 +120,46 @@ export function parseContextArgs(argv: string[]): ContextArgs {
 
 const EMPTY_LINE = 'No past sessions found for this repo.';
 
-/** Render a context primer as markdown: a `## Recent` detail tier + an `## Earlier` headline tier. */
-export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
+/**
+ * Lesson text budget, hook mode and full. Truncation drops whole lessons — half a
+ * lesson is worse than a missing one, because the half that survives reads as the
+ * complete claim.
+ */
+export const LESSONS_MAX_CHARS_HOOK = 1200;
+export const LESSONS_MAX_CHARS_FULL = 3000;
+
+/** `## Lessons`: what was learned here, ahead of what merely happened here. */
+function renderLessons(primer: ContextPrimer, maxChars: number): string[] {
+  if (primer.lessons.length === 0 && primer.lessonsFlagged === 0) return [];
+
+  const out: string[] = ['## Lessons\n'];
+  let used = 0;
+  let shown = 0;
+  for (const l of primer.lessons) {
+    const scope = l.scope === 'global' ? ' · global' : '';
+    // An unauditable lesson is still worth serving, but never silently: the mark is
+    // the difference between a claim you can trace and one you cannot.
+    const mark = l.verified ? '' : ' · unverified source';
+    const line = `- ${l.lesson}${l.detail ? ` — ${l.detail}` : ''} _(#${l.id}${scope}${mark})_`;
+    if (shown > 0 && used + line.length > maxChars) break;
+    out.push(line);
+    used += line.length;
+    shown++;
+  }
+
+  const omitted = primer.lessonsTotal - shown;
+  if (omitted > 0) out.push(`- _+${omitted} more — run \`sessions lessons\`_`);
+  if (primer.lessonsFlagged > 0) {
+    out.push(
+      `- _${primer.lessonsFlagged} lesson${primer.lessonsFlagged === 1 ? '' : 's'} flagged as conflicting and withheld — run \`sessions lessons review\`_`,
+    );
+  }
+  out.push('');
+  return out;
+}
+
+/** Render a context primer as markdown: `## Lessons`, then a `## Recent` detail tier + an `## Earlier` headline tier. */
+export function renderMarkdown(primer: ContextPrimer, full: boolean, lessonsMaxChars = LESSONS_MAX_CHARS_FULL): string {
   if (primer.isEmpty) {
     return `# Context primer: ${primer.repoLabel}\n\n${EMPTY_LINE}\n`;
   }
@@ -128,7 +168,12 @@ export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
   out.push(`# Context primer: ${primer.repoLabel}`);
   if (primer.toolFilter) out.push(`\n_Filtered to ${primer.toolFilter} sessions._`);
 
-  out.push('\n## Recent\n');
+  out.push('');
+  out.push(...renderLessons(primer, lessonsMaxChars));
+
+  if (primer.recent.length === 0 && primer.headlines.length === 0) return out.join('\n');
+
+  out.push('## Recent\n');
   for (const s of primer.recent) {
     out.push(`### ${s.date} · ${s.tool} · ${s.branch}`);
     out.push(`- **Intent:** ${s.intent || '(none)'}`);
@@ -192,6 +237,55 @@ export async function runContext(args: ContextArgs): Promise<void> {
   }
 }
 
+/** The SessionStart payload Claude Code writes to the hook's stdin. */
+interface SessionStartPayload {
+  session_id?: string;
+  transcript_path?: string;
+  cwd?: string;
+  source?: string;
+}
+
+/**
+ * Read the hook payload, or give up quickly.
+ *
+ * A client that pipes nothing leaves stdin open forever, and the hook has a 10s
+ * budget it must stay well inside. The unresolved read is simply abandoned — the
+ * `context` command exits the process when it returns, so nothing is left hanging.
+ */
+async function readHookPayload(timeoutMs = 250): Promise<SessionStartPayload | null> {
+  const text = await Promise.race([
+    Bun.stdin.text(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+  if (!text) return null;
+  try {
+    const payload = JSON.parse(text) as SessionStartPayload;
+    return typeof payload === 'object' && payload !== null ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hand the MCP server what only the hook knows.
+ *
+ * The hook is told the session id and transcript path directly, and it fires again
+ * with the correct ones after a resume — which is exactly where the inherited
+ * CLAUDE_CODE_SESSION_ID lies. Keyed by that inherited value, stale or not, because
+ * both processes are children of the same client and so agree on it.
+ */
+function handOffSession(payload: SessionStartPayload | null): void {
+  if (!payload?.session_id || !payload.transcript_path) return;
+  const key = process.env.CLAUDE_CODE_SESSION_ID || payload.session_id;
+  writeHandoff(key, {
+    sessionId: payload.session_id,
+    transcriptPath: payload.transcript_path,
+    cwd: payload.cwd ?? process.cwd(),
+    source: payload.source ?? '',
+    writtenAt: new Date().toISOString(),
+  });
+}
+
 /**
  * SessionStart-hook mode. Bounded, fail-safe primer for injection at session
  * start. Prints a tiny markdown primer when there is repo history; prints
@@ -200,6 +294,10 @@ export async function runContext(args: ContextArgs): Promise<void> {
  */
 async function runContextHook(args: ContextArgs): Promise<void> {
   try {
+    // Inside the same try as everything else: a read-only HOME must not fail a
+    // session start just because provenance could not be recorded.
+    handOffSession(await readHookPayload());
+
     const repo = resolveRepo(process.cwd());
     if (!repo) return; // not a git repo → inject nothing
 
@@ -208,12 +306,13 @@ async function runContextHook(args: ContextArgs): Promise<void> {
       days: args.days,
       tool: args.tool,
       worktreeOnly: args.worktreeOnly,
+      lessonLimit: LESSON_HOOK_LIMIT,
     });
 
     if (primer.isEmpty) return; // no history → inject nothing
 
     // Never widen detail in hook mode — keep the injected block small.
-    process.stdout.write(renderMarkdown(primer, false));
+    process.stdout.write(renderMarkdown(primer, false, LESSONS_MAX_CHARS_HOOK));
     // Standing pointer for the agent: the primer is a snapshot, not the archive.
     process.stdout.write(
       '\n> This is a snapshot of recent sessions on this repo. Full history across all past sessions is searchable — use the sessions MCP tools (search_sessions, get_session_digest, get_context_primer) when prior work, decisions, or dead ends are referenced.\n',

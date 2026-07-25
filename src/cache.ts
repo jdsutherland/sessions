@@ -26,6 +26,7 @@ import { getSessionMessages, parseSession, toMessages } from './record';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
+import { readLessonsForRepo, LESSON_LIMIT } from './memory';
 
 // Source/cache locations live in src/paths.ts — every one honors a SESSIONS_* env
 // override so tests can point the index at hermetic temp fixtures. Re-exported
@@ -1164,6 +1165,7 @@ export interface ContextOptions {
   tool?: Tool | ''; // optional tool filter
   worktreeOnly?: boolean; // restrict to current worktree (default false → aggregate)
   headlineCap?: number; // older-tier cap (default 40)
+  lessonLimit?: number; // saved-lesson cap (default LESSON_LIMIT)
 }
 
 interface ContextRow {
@@ -1232,8 +1234,24 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
 
   const repoLabel = basename(repo.container);
 
+  // Lessons ride the primer rather than a tool of their own: this is the call an
+  // agent already makes first, and the hook path injects it mechanically. They come
+  // from memory.db, which is never joined to this one — a wrong session costs a
+  // wasted read, a wrong lesson costs a wrong belief.
+  const lessons = readLessonsForRepo(repo.container, repo.remote, opts.lessonLimit ?? LESSON_LIMIT);
+
   if (rows.length === 0) {
-    return { repoLabel, toolFilter, recent: [], headlines: [], isEmpty: true };
+    return {
+      repoLabel,
+      toolFilter,
+      recent: [],
+      headlines: [],
+      lessons: lessons.lessons,
+      lessonsFlagged: lessons.flagged,
+      lessonsTotal: lessons.total,
+      // A repo with lessons but no indexed sessions still has something to say.
+      isEmpty: lessons.lessons.length === 0 && lessons.flagged === 0,
+    };
   }
 
   // Rank the detail tier by recency-weighted significance instead of raw recency,
@@ -1280,5 +1298,14 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     intent: r.custom_title || r.first_prompt,
   }));
 
-  return { repoLabel, toolFilter, recent, headlines, isEmpty: false };
+  return {
+    repoLabel,
+    toolFilter,
+    recent,
+    headlines,
+    lessons: lessons.lessons,
+    lessonsFlagged: lessons.flagged,
+    lessonsTotal: lessons.total,
+    isEmpty: false,
+  };
 }

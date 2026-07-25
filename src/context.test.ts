@@ -12,6 +12,7 @@ const claudeDir = join(fixtureRoot, 'claude');
 const piDir = join(fixtureRoot, 'pi');
 const codexDir = join(fixtureRoot, 'codex');
 const cacheDir = join(fixtureRoot, 'cache');
+const memoryDb = join(fixtureRoot, 'memory.db'); // written only by the lesson tests below
 const opencodeDb = join(fixtureRoot, 'opencode.db'); // absent → no OpenCode sessions leak in
 for (const d of [claudeDir, piDir, codexDir, cacheDir]) mkdirSync(d, { recursive: true });
 
@@ -19,6 +20,7 @@ process.env.SESSIONS_CLAUDE_DIR = claudeDir;
 process.env.SESSIONS_PI_DIR = piDir;
 process.env.SESSIONS_CODEX_DIR = codexDir;
 process.env.SESSIONS_CACHE_DIR = cacheDir;
+process.env.SESSIONS_MEMORY_DB = memoryDb;
 process.env.SESSIONS_OPENCODE_DB = opencodeDb;
 
 const cache = await import('./cache');
@@ -31,6 +33,7 @@ beforeEach(() => {
   process.env.SESSIONS_PI_DIR = piDir;
   process.env.SESSIONS_CODEX_DIR = codexDir;
   process.env.SESSIONS_CACHE_DIR = cacheDir;
+  process.env.SESSIONS_MEMORY_DB = memoryDb;
   process.env.SESSIONS_OPENCODE_DB = opencodeDb;
   cache.closeDb();
 });
@@ -98,6 +101,7 @@ function fakeRepo(container: string, branches: Record<string, string>, currentWo
     container,
     currentWorktree: currentWorktree ?? container,
     branches: new Map(Object.entries(branches)),
+    remote: '',
   };
 }
 
@@ -299,6 +303,9 @@ describe('cli', () => {
       repoLabel: 'myrepo',
       toolFilter: '',
       isEmpty: false,
+      lessons: [],
+      lessonsFlagged: 0,
+      lessonsTotal: 0,
       recent: [
         {
           sessionId: 's1',
@@ -331,6 +338,9 @@ describe('cli', () => {
       repoLabel: 'blank',
       toolFilter: '',
       isEmpty: true,
+      lessons: [],
+      lessonsFlagged: 0,
+      lessonsTotal: 0,
       recent: [],
       headlines: [],
     };
@@ -345,6 +355,9 @@ describe('cli', () => {
       repoLabel: 'r',
       toolFilter: '',
       isEmpty: false,
+      lessons: [],
+      lessonsFlagged: 0,
+      lessonsTotal: 0,
       recent: [
         {
           sessionId: 's',
@@ -430,4 +443,238 @@ describe('mcp', () => {
     expect(md).toContain('/mcp-parity/a.ts');
     expect(md).toContain('all green');
   });
+});
+
+const memory = await import('./memory');
+
+/**
+ * The read half. A write path with no read path is a write-only log, which is the
+ * problem this feature exists to solve — so these go end to end through
+ * getContextPrimer, not through the store's own accessors.
+ */
+describe('lessons in the primer', () => {
+  const NO_SOURCE = {
+    sessionId: null,
+    transcript: null,
+    toolUseId: null,
+    provenance: 'none' as const,
+    verified: false,
+    tool: '' as const,
+  };
+
+  function saveLesson(lesson: string, over: Partial<Parameters<typeof memory.rememberLesson>[0]> = {}) {
+    return memory.rememberLesson({ lesson, source: NO_SOURCE, ...over });
+  }
+
+  beforeEach(() => {
+    memory.closeMemoryDb();
+    rmSync(memoryDb, { force: true });
+  });
+
+  test('a saved lesson reaches the primer for its repo, repo scope ahead of global', async () => {
+    const cwd = join(fixtureRoot, 'lessons-basic');
+    writeClaudeSession({ cwd, firstPrompt: 'some prior work' });
+    saveLesson('The queue drains on shutdown, so a pending job is never lost.', {
+      container: cwd,
+      detail: 'src/queue.ts drain() awaits inflight',
+      now: '2026-07-01T00:00:00.000Z',
+    });
+    saveLesson('Bun binaries busy-loop when orphaned on an EOF stdin.', {
+      scope: 'global',
+      now: '2026-07-02T00:00:00.000Z',
+    });
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    expect(primer.lessons.map((l) => l.scope)).toEqual(['repo', 'global']);
+    expect(primer.lessons[0]!.lesson).toContain('queue drains');
+    expect(primer.lessonsTotal).toBe(2);
+    expect(primer.lessonsFlagged).toBe(0);
+  });
+
+  test('another repo sees the global lesson and not the repo one', async () => {
+    const cwd = join(fixtureRoot, 'lessons-scoped');
+    const other = join(fixtureRoot, 'lessons-elsewhere');
+    writeClaudeSession({ cwd, firstPrompt: 'work here' });
+    writeClaudeSession({ cwd: other, firstPrompt: 'work there' });
+    saveLesson('The queue drains on shutdown, so a pending job is never lost.', { container: cwd });
+    saveLesson('Bun binaries busy-loop when orphaned on an EOF stdin.', { scope: 'global' });
+
+    const primer = await cache.getContextPrimer(fakeRepo(other, {}), { tool: '' });
+    expect(primer.lessons.map((l) => l.scope)).toEqual(['global']);
+  });
+
+  // Two contradictory lessons both served as fact is the highest-blast-radius
+  // failure here, because the whole point of the read path is that the agent
+  // trusts it. Neither is served; the count is.
+  test('conflicting lessons are withheld from the primer and surfaced as a count', async () => {
+    const cwd = join(fixtureRoot, 'lessons-conflict');
+    writeClaudeSession({ cwd, firstPrompt: 'work with a contested lesson' });
+    const A = 'The lesson store lives outside the cache directory.';
+    const B = 'The lesson store lives inside the cache directory.';
+    const first = saveLesson(A, { container: cwd });
+    const second = saveLesson(B, { container: cwd });
+    expect(second.outcome).toBe('conflict');
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    expect(primer.lessons).toEqual([]);
+    expect(primer.lessonsFlagged).toBe(2);
+    expect(primer.lessonsTotal).toBe(0);
+
+    // Nothing merged, nothing overwritten: both texts are still exactly as written.
+    const rows = memory.listLessons({ all: true });
+    expect(rows.find((r) => r.id === first.id)!.lesson).toBe(A);
+    expect(rows.find((r) => r.id === second.id)!.lesson).toBe(B);
+    expect(rows.every((r) => r.status === 'needs_review')).toBe(true);
+    expect(new Set(rows.map((r) => r.review_group)).size).toBe(1);
+
+    const md = ctx.renderMarkdown(primer, false);
+    expect(md).not.toContain('lesson store lives');
+    expect(md).toContain('2 lessons flagged as conflicting');
+  });
+
+  test('a repo with lessons but no indexed sessions is not an empty primer', async () => {
+    const cwd = join(fixtureRoot, 'lessons-only');
+    saveLesson('Nothing has been indexed here yet, but this was still learned.', { container: cwd });
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    expect(primer.isEmpty).toBe(false);
+    expect(primer.recent).toEqual([]);
+    const md = ctx.renderMarkdown(primer, false);
+    expect(md).toContain('## Lessons');
+    expect(md).not.toContain('No past sessions found');
+  });
+
+  test('the Lessons section renders before Recent, marking unverified sources', async () => {
+    const cwd = join(fixtureRoot, 'lessons-render');
+    writeClaudeSession({ cwd, firstPrompt: 'render ordering check' });
+    saveLesson('An unverified lesson still shows, but says so.', { container: cwd });
+    saveLesson('A verified lesson carries no mark.', {
+      container: cwd,
+      source: { ...NO_SOURCE, sessionId: 'sess-1', provenance: 'hook', verified: true, tool: 'claude' },
+    });
+
+    const md = ctx.renderMarkdown(await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' }), false);
+    expect(md.indexOf('## Lessons')).toBeLessThan(md.indexOf('## Recent'));
+    expect(md).toMatch(/An unverified lesson still shows, but says so\..*unverified source/);
+    expect(md).toMatch(/A verified lesson carries no mark\. _\(#\d+\)_/);
+  });
+
+  test('a capped list says how many it left out', async () => {
+    const cwd = join(fixtureRoot, 'lessons-capped');
+    writeClaudeSession({ cwd, firstPrompt: 'lots of lessons here' });
+    const lessons = [
+      'Worktrees collapse to one container key.',
+      'Timezone bucketing happens once, in the report pipeline.',
+      'Trajectory export drops reasoning blocks.',
+      'The fzf picker reads from stderr.',
+      'Pricing data is embedded at build time.',
+      'OpenCode keeps conversations in one SQLite file.',
+    ];
+    lessons.forEach((l, i) => saveLesson(l, { container: cwd, now: `2026-07-0${i + 1}T00:00:00.000Z` }));
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '', lessonLimit: 3 });
+    expect(primer.lessons.length).toBe(3);
+    expect(primer.lessonsTotal).toBe(6);
+    expect(ctx.renderMarkdown(primer, false)).toContain('+3 more');
+  });
+
+  test('the char budget drops whole lessons, never half of one', async () => {
+    const cwd = join(fixtureRoot, 'lessons-budget');
+    writeClaudeSession({ cwd, firstPrompt: 'budget check' });
+    const long = (n: number) => `Lesson ${n} ${'w'.repeat(200)}`;
+    for (let i = 0; i < 3; i++) {
+      saveLesson(long(i), { container: cwd, now: `2026-07-0${i + 1}T00:00:00.000Z` });
+    }
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    const md = ctx.renderMarkdown(primer, false, 250);
+    const bullets = md.split('\n').filter((l) => l.startsWith('- Lesson '));
+    expect(bullets.length).toBeLessThan(3);
+    for (const b of bullets) expect(b).toMatch(/_\(#\d+[^)]*\)_$/); // every rendered lesson is whole
+    expect(md).toContain('more — run `sessions lessons`');
+  });
+});
+
+/**
+ * The hook now reads stdin to capture the SessionStart payload. A client that pipes
+ * nothing leaves it open forever, and the hook has a 10s budget it must stay well
+ * inside — so the read is raced and then abandoned.
+ */
+describe('the SessionStart hook stays inside its budget', () => {
+  const repoRoot = join(import.meta.dir, '..');
+
+  test('stdin that never closes still exits promptly and injects nothing', async () => {
+    const notARepo = join(fixtureRoot, 'not-a-repo');
+    mkdirSync(notARepo, { recursive: true });
+
+    const started = Date.now();
+    const proc = Bun.spawn(['bun', 'run', join(repoRoot, 'index.ts'), 'context', '--hook'], {
+      cwd: notARepo,
+      stdin: 'pipe', // opened and never written to or closed
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...process.env,
+        SESSIONS_CLAUDE_DIR: claudeDir,
+        SESSIONS_PI_DIR: piDir,
+        SESSIONS_CODEX_DIR: codexDir,
+        SESSIONS_CACHE_DIR: cacheDir,
+        SESSIONS_MEMORY_DB: memoryDb,
+        SESSIONS_OPENCODE_DB: opencodeDb,
+        SESSIONS_HANDOFF_DIR: join(fixtureRoot, 'handoff'),
+      },
+    });
+
+    const code = await proc.exited;
+    const elapsed = Date.now() - started;
+
+    expect(code).toBe(0);
+    expect(await new Response(proc.stdout).text()).toBe('');
+    expect(elapsed).toBeLessThan(5000); // HOOK_TIMEOUT_MS is 10s; this must not approach it
+  }, 15000);
+
+  test('a piped SessionStart payload becomes a handoff the MCP server can resolve', async () => {
+    const handoffDir = join(fixtureRoot, 'handoff-write');
+    const notARepo = join(fixtureRoot, 'not-a-repo-2');
+    mkdirSync(notARepo, { recursive: true });
+    const transcript = join(fixtureRoot, 'transcript.jsonl');
+    writeFileSync(transcript, '{}\n');
+
+    const proc = Bun.spawn(['bun', 'run', join(repoRoot, 'index.ts'), 'context', '--hook'], {
+      cwd: notARepo,
+      stdin: new TextEncoder().encode(
+        JSON.stringify({
+          session_id: '11772ef1-6b80-46ec-9f32-97cd785efa1f',
+          transcript_path: transcript,
+          cwd: notARepo,
+          hook_event_name: 'SessionStart',
+          source: 'resume',
+        }),
+      ),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      env: {
+        ...process.env,
+        SESSIONS_CLAUDE_DIR: claudeDir,
+        SESSIONS_PI_DIR: piDir,
+        SESSIONS_CODEX_DIR: codexDir,
+        SESSIONS_CACHE_DIR: cacheDir,
+        SESSIONS_MEMORY_DB: memoryDb,
+        SESSIONS_OPENCODE_DB: opencodeDb,
+        SESSIONS_HANDOFF_DIR: handoffDir,
+        // The measured `claude -c` case: the env id is stale, the payload id is real.
+        CLAUDE_CODE_SESSION_ID: 'c57c50e1-0000-4000-8000-000000000000',
+      },
+    });
+    expect(await proc.exited).toBe(0);
+
+    process.env.SESSIONS_HANDOFF_DIR = handoffDir;
+    const prov = await import('./provenance');
+    // Keyed by the stale env value both processes share; carrying the real id.
+    const handoff = prov.readHandoff('c57c50e1-0000-4000-8000-000000000000');
+    expect(handoff?.sessionId).toBe('11772ef1-6b80-46ec-9f32-97cd785efa1f');
+    expect(handoff?.transcriptPath).toBe(transcript);
+    expect(handoff?.source).toBe('resume');
+    delete process.env.SESSIONS_HANDOFF_DIR;
+  }, 15000);
 });
