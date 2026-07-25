@@ -1,13 +1,15 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 import { enableSessionHook, disableSessionHook } from './hooks';
+import { getDataDir, getHome, getMemoryDbPath } from './paths';
+import { countLessons, purgeLessons } from './memory';
 
-const home = homedir();
-const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
-const PLUGIN_DEST = join(SESSIONS_DIR, 'plugin');
+// Resolved per call rather than frozen at import so SESSIONS_HOME / SESSIONS_DATA_DIR
+// let install and uninstall be exercised without touching the real home.
+const sessionsDir = (): string => getDataDir();
+const pluginDest = (): string => join(sessionsDir(), 'plugin');
 const PLUGIN_VERSION = '1.15.3'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
@@ -19,6 +21,7 @@ interface ToolConfig {
 }
 
 function detectTools(): ToolConfig[] {
+  const home = getHome();
   return [
     {
       name: 'Claude Code',
@@ -52,8 +55,8 @@ function findPluginSource(): string {
 
 function installPluginFromDisk(source: string): boolean {
   try {
-    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
-    cpSync(source, PLUGIN_DEST, { recursive: true, force: true });
+    mkdirSync(dirname(pluginDest()), { recursive: true });
+    cpSync(source, pluginDest(), { recursive: true, force: true });
     return true;
   } catch {
     return false;
@@ -62,9 +65,9 @@ function installPluginFromDisk(source: string): boolean {
 
 function installPluginFromEmbed(): boolean {
   try {
-    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
+    mkdirSync(dirname(pluginDest()), { recursive: true });
     for (const [relPath, content] of Object.entries(PLUGIN_FILES)) {
-      const dest = join(PLUGIN_DEST, relPath);
+      const dest = join(pluginDest(), relPath);
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, content);
     }
@@ -87,7 +90,7 @@ function writeMarketplaceJson(): void {
       },
     ],
   };
-  const dir = join(SESSIONS_DIR, '.claude-plugin');
+  const dir = join(sessionsDir(), '.claude-plugin');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'marketplace.json'), JSON.stringify(marketplace, null, 2) + '\n');
 }
@@ -144,7 +147,7 @@ function runClaude(...args: string[]): boolean {
 }
 
 function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
-  const marketplace = runClaude('marketplace', 'add', SESSIONS_DIR);
+  const marketplace = runClaude('marketplace', 'add', sessionsDir());
   const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
   return { marketplace, install };
 }
@@ -186,9 +189,9 @@ export function runSetup(opts: SetupOptions = {}): void {
   w(`\n${C.bold}sessions setup${C.reset}\n\n`);
 
   if (installPlugin()) {
-    w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
+    w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${pluginDest()}${C.reset}\n`);
   } else {
-    w(`  ${C.red}✗${C.reset} Failed to install plugin to ${PLUGIN_DEST}\n`);
+    w(`  ${C.red}✗${C.reset} Failed to install plugin to ${pluginDest()}\n`);
     process.exit(1);
   }
 
@@ -243,7 +246,13 @@ export function runSetup(opts: SetupOptions = {}): void {
   w(`\n  ${C.dim}Run \`sessions setup\` again after upgrading to update skills.${C.reset}\n\n`);
 }
 
-export function runUninstall(): void {
+export interface UninstallOptions {
+  /** Delete memory.db too. Opt-in, never implied, and refused without `yes` on a TTY. */
+  purgeLessons?: boolean;
+  yes?: boolean;
+}
+
+export function runUninstall(opts: UninstallOptions = {}): void {
   const w = (s: string) => process.stderr.write(s);
 
   w(`\n${C.bold}sessions uninstall${C.reset}\n\n`);
@@ -272,10 +281,48 @@ export function runUninstall(): void {
     }
   }
 
-  try {
-    require('node:fs').rmSync(SESSIONS_DIR, { recursive: true, force: true });
-    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${SESSIONS_DIR}${C.reset}\n`);
-  } catch {}
+  // Remove only what setup created. This used to be `rm -rf` on the whole data dir,
+  // which now also holds memory.db — the one thing here that no amount of re-scanning
+  // can reproduce.
+  for (const dir of [pluginDest(), join(sessionsDir(), '.claude-plugin')]) {
+    try {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+        w(`  ${C.green}✓${C.reset} Removed ${C.dim}${dir}${C.reset}\n`);
+      }
+    } catch {}
+  }
+
+  reportLessons(w, opts);
 
   w(`\n  ${C.dim}Done. Plugin and MCP config removed.${C.reset}\n\n`);
+}
+
+/** Say plainly what was kept and where, or purge it if the user explicitly asked twice. */
+function reportLessons(w: (s: string) => void, opts: UninstallOptions): void {
+  const kept = countLessons();
+
+  if (opts.purgeLessons) {
+    // --yes is required whether or not there is a TTY. Gating only the interactive
+    // case would protect the user who can see the warning and not the script that
+    // cannot — and a script is where a silent purge actually happens.
+    if (!opts.yes) {
+      w(
+        `  ${C.red}✗${C.reset} --purge-lessons deletes ${kept} lesson${kept === 1 ? '' : 's'} that nothing can regenerate.\n` +
+          `  ${C.dim}Re-run with --yes to confirm, or export first: sessions lessons export --out lessons.json${C.reset}\n`,
+      );
+      return;
+    }
+    purgeLessons();
+    w(
+      `  ${C.green}✓${C.reset} Purged ${kept} lesson${kept === 1 ? '' : 's'} from ${C.dim}${getMemoryDbPath()}${C.reset}\n`,
+    );
+    return;
+  }
+
+  if (kept === 0) return;
+  w(
+    `  ${C.dim}Kept ${kept} lesson${kept === 1 ? '' : 's'} at ${getMemoryDbPath()} — not re-derivable from transcripts.${C.reset}\n` +
+      `  ${C.dim}Export: sessions lessons export --out lessons.json   Delete: sessions uninstall --purge-lessons${C.reset}\n`,
+  );
 }

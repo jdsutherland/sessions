@@ -47,7 +47,7 @@ if (command === 'setup') {
 
 if (command === 'uninstall') {
   const { runUninstall } = await import('./src/setup');
-  runUninstall();
+  runUninstall({ purgeLessons: Bun.argv.includes('--purge-lessons'), yes: Bun.argv.includes('--yes') });
   process.exit(0);
 }
 
