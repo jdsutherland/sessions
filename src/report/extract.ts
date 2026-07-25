@@ -62,10 +62,10 @@ export interface GatherOptions {
   cache?: boolean;
 }
 
-// The widest UTC offset is ±14h, and a local calendar day is 24h wide, so a window that
-// opens on a local date can reach 38h back from that date's midnight UTC. Anything older
-// is slack against a filesystem clock that runs behind or an mtime carried over by `cp -p`.
-const PRUNE_SLACK_MS = 38 * 60 * 60 * 1000;
+// A local date opens at most 14h before its own midnight UTC (the widest UTC offset), so
+// that much is required. The remaining day is slack against a filesystem clock that runs
+// behind or an mtime carried over by a `cp -p`.
+const PRUNE_SLACK_MS = (14 + 24) * 60 * 60 * 1000;
 
 /**
  * The mtime floor for a report window opening on local date `startDate` (YYYY-MM-DD).

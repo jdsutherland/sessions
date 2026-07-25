@@ -1,6 +1,6 @@
 // Parsed usage events, cached per transcript and keyed by mtime+size — the same signal the
 // search index trusts to decide a file has not changed. A closed session is never rewritten,
-// so re-reading it costs 2.7 GB of I/O to produce bytes we already had.
+// so re-reading one spends I/O (gigabytes, over a corpus of any age) on bytes we already had.
 //
 // The mtime prune bounds a scan to the window's *lower* edge; this bounds it to what actually
 // changed. Together, a metrics call reads a few new transcripts instead of every one ever
