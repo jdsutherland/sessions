@@ -2,7 +2,7 @@ import { describe, test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gatherEvents } from './extract.ts';
+import { gatherEvents, defaultRoots } from './extract.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-report-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -46,5 +46,27 @@ describe('gatherEvents', () => {
   test('honors the tools filter', async () => {
     const events = await gatherEvents(roots, new Set(['pi']));
     expect(events.length).toBe(0);
+  });
+});
+
+describe('defaultRoots', () => {
+  test('honors the SESSIONS_* overrides, so a sandboxed run cannot read the real home', () => {
+    const saved = { ...process.env };
+    try {
+      process.env['SESSIONS_HOME'] = '/sandbox';
+      delete process.env['SESSIONS_CLAUDE_DIR'];
+      delete process.env['SESSIONS_PI_DIR'];
+      delete process.env['SESSIONS_CODEX_DIR'];
+      expect(defaultRoots()).toMatchObject({
+        claudeCode: '/sandbox/.claude/projects',
+        pi: '/sandbox/.pi/agent/sessions',
+        codex: '/sandbox/.codex/sessions',
+      });
+      // A per-tool override still wins over the sandboxed home.
+      process.env['SESSIONS_CODEX_DIR'] = '/elsewhere/codex';
+      expect(defaultRoots().codex).toBe('/elsewhere/codex');
+    } finally {
+      process.env = saved;
+    }
   });
 });

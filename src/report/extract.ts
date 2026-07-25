@@ -1,5 +1,3 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import type { UsageEvent } from './parsers/types.ts';
 import type { ToolId } from './types.ts';
 import { parseClaudeCode } from './parsers/claude-code.ts';
@@ -7,6 +5,7 @@ import { parsePi } from './parsers/pi.ts';
 import { parseCodex } from './parsers/codex.ts';
 import { parseOpencode } from './parsers/opencode.ts';
 import { getOpencodeDbPath } from '../opencode.ts';
+import { getClaudeDir, getPiDir, getCodexDir } from '../paths.ts';
 
 export interface ReportRoots {
   claudeCode: string;
@@ -17,13 +16,16 @@ export interface ReportRoots {
   opencode?: string;
 }
 
+/**
+ * The same roots the search index reads, resolved the same way. These used to be spelled
+ * from a raw homedir(), so the SESSIONS_* overrides every other surface honors did nothing
+ * here: an MCP server pointed at a sandboxed home still read the operator's real corpus.
+ */
 export function defaultRoots(): ReportRoots {
-  const home = homedir();
   return {
-    claudeCode: join(home, '.claude', 'projects'),
-    pi: join(home, '.pi', 'agent', 'sessions'),
-    codex: join(home, '.codex', 'sessions'),
-    // Same resolution (env override included) as the search index — one source of truth.
+    claudeCode: getClaudeDir(),
+    pi: getPiDir(),
+    codex: getCodexDir(),
     opencode: getOpencodeDbPath(),
   };
 }
