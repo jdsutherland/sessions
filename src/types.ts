@@ -129,5 +129,7 @@ export interface ContextPrimer {
   lessonsFlagged: number;
   /** Active in-scope lessons, so a capped list can say how many it left out. */
   lessonsTotal: number;
+  /** Corrupt lesson stores moved aside. Non-empty means lessons are missing, not absent. */
+  lessonsQuarantined: string[];
   isEmpty: boolean;
 }

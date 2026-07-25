@@ -1252,8 +1252,10 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
       lessons: lessons.lessons,
       lessonsFlagged: lessons.flagged,
       lessonsTotal: lessons.total,
-      // A repo with lessons but no indexed sessions still has something to say.
-      isEmpty: lessons.lessons.length === 0 && lessons.flagged === 0,
+      lessonsQuarantined: lessons.quarantined,
+      // A repo with lessons but no indexed sessions still has something to say — and so
+      // does a store that was moved aside, which is the one empty that must be loud.
+      isEmpty: lessons.lessons.length === 0 && lessons.flagged === 0 && lessons.quarantined.length === 0,
     };
   }
 
@@ -1309,6 +1311,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     lessons: lessons.lessons,
     lessonsFlagged: lessons.flagged,
     lessonsTotal: lessons.total,
+    lessonsQuarantined: lessons.quarantined,
     isEmpty: false,
   };
 }

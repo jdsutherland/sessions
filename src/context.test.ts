@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterAll, spyOn } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { RepoInfo } from './repo';
 import type { ContextPrimer } from './types';
 
@@ -306,6 +306,7 @@ describe('cli', () => {
       lessons: [],
       lessonsFlagged: 0,
       lessonsTotal: 0,
+      lessonsQuarantined: [],
       recent: [
         {
           sessionId: 's1',
@@ -341,6 +342,7 @@ describe('cli', () => {
       lessons: [],
       lessonsFlagged: 0,
       lessonsTotal: 0,
+      lessonsQuarantined: [],
       recent: [],
       headlines: [],
     };
@@ -358,6 +360,7 @@ describe('cli', () => {
       lessons: [],
       lessonsFlagged: 0,
       lessonsTotal: 0,
+      lessonsQuarantined: [],
       recent: [
         {
           sessionId: 's',
@@ -592,6 +595,44 @@ describe('lessons in the primer', () => {
     expect(bullets.length).toBeLessThan(3);
     for (const b of bullets) expect(b).toMatch(/_\(#\d+[^)]*\)_$/); // every rendered lesson is whole
     expect(md).toContain('more — run `sessions lessons`');
+  });
+
+  // A corrupt store reads as "nothing was ever saved" on every surface unless the
+  // quarantine is carried through the primer, so this goes end to end too.
+  test('a quarantined store is reported by the primer instead of showing no lessons', async () => {
+    const cwd = join(fixtureRoot, 'lessons-corrupt');
+    writeClaudeSession({ cwd, firstPrompt: 'work over a broken store' });
+    saveLesson('This lesson is about to become unreadable.', { container: cwd });
+    memory.closeMemoryDb();
+    writeFileSync(memoryDb, 'this is not a sqlite database at all');
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    expect(primer.lessons).toEqual([]);
+    expect(primer.lessonsQuarantined.length).toBe(1);
+    expect(primer.isEmpty).toBe(false);
+    expect(existsSync(memoryDb)).toBe(false); // the read did not conjure a replacement
+
+    const md = ctx.renderMarkdown(primer, false);
+    expect(md).toContain('## Lessons');
+    expect(md).toContain('The lesson store was corrupt and moved to');
+    expect(md).toContain('.corrupt-');
+
+    for (const f of readdirSync(dirname(memoryDb))) {
+      if (f.includes('.corrupt-')) rmSync(join(dirname(memoryDb), f));
+    }
+  });
+
+  test('a repo with only a quarantined store is not an empty primer', async () => {
+    const cwd = join(fixtureRoot, 'lessons-corrupt-only');
+    writeFileSync(memoryDb, 'this is not a sqlite database at all');
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '' });
+    expect(primer.isEmpty).toBe(false);
+    expect(ctx.renderMarkdown(primer, false)).toContain('corrupt');
+
+    for (const f of readdirSync(dirname(memoryDb))) {
+      if (f.includes('.corrupt-')) rmSync(join(dirname(memoryDb), f));
+    }
   });
 });
 

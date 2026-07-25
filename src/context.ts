@@ -130,9 +130,17 @@ export const LESSONS_MAX_CHARS_FULL = 3000;
 
 /** `## Lessons`: what was learned here, ahead of what merely happened here. */
 function renderLessons(primer: ContextPrimer, maxChars: number): string[] {
-  if (primer.lessons.length === 0 && primer.lessonsFlagged === 0) return [];
+  if (primer.lessons.length === 0 && primer.lessonsFlagged === 0 && primer.lessonsQuarantined.length === 0) return [];
 
   const out: string[] = ['## Lessons\n'];
+  // First, and outside the char budget: an empty lesson list and a lesson store that
+  // was moved aside look identical, and only one of them means something was lost.
+  for (const path of primer.lessonsQuarantined) {
+    out.push(
+      `- **The lesson store was corrupt and moved to \`${path}\`.** Nothing from it is being served and nothing was deleted — recover it (\`sqlite3 <file> .dump\`) or remove it to clear this notice.`,
+    );
+  }
+
   let used = 0;
   let shown = 0;
   for (const l of primer.lessons) {
