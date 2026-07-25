@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { isJunkCwd, junkCwdSql } from './exclude.ts';
+import { isJunkCwd, isJunkScope, junkCwdSql } from './exclude.ts';
 import { isRealModel, canonicalModel } from './model-name.ts';
 import { mineWords } from './content.ts';
 import { computeEventStats } from './compute.ts';
@@ -18,6 +18,29 @@ describe('isJunkCwd', () => {
     expect(isJunkCwd('/private/tmp/my-app')).toBe(true);
     expect(isJunkCwd('/tmp/test4')).toBe(true);
     expect(isJunkCwd('/Users/nick/Library/Application Support/CodexBar/ClaudeProbe')).toBe(true);
+  });
+
+  test('isJunkScope covers the roots the rules are written relative to', () => {
+    // The rules describe session cwds ('/tmp/'), so a root fails its own rule: `/tmp`
+    // does not start with `/tmp/`. Scoping there must still exempt the filter, or the
+    // scope selects only rows the filter then removes.
+    expect(isJunkCwd('/tmp')).toBe(false);
+    expect(isJunkScope('/tmp')).toBe(true);
+    expect(isJunkScope('/tmp/')).toBe(true);
+    expect(isJunkScope('/private/tmp')).toBe(true);
+    expect(isJunkScope('/var/folders')).toBe(true);
+    expect(isJunkScope('/private/var/folders')).toBe(true);
+    expect(isJunkScope('/private')).toBe(true); // an ancestor of /private/tmp, asked for explicitly
+    expect(isJunkScope('/var')).toBe(true); // likewise for /var/folders
+    expect(isJunkScope('/tmp/scratch-one')).toBe(true); // inside one — isJunkCwd already said so
+  });
+
+  test('isJunkScope leaves real scopes filtered', () => {
+    expect(isJunkScope(undefined)).toBe(false);
+    expect(isJunkScope('')).toBe(false);
+    expect(isJunkScope('/Users/nick/Developer/cli')).toBe(false);
+    expect(isJunkScope('/tmpfoo')).toBe(false); // prefix-sharing sibling, not a junk root
+    expect(isJunkScope('/Users/nick/vars')).toBe(false); // nor is a name that merely starts the same
   });
 
   test('junkCwdSql produces NOT LIKE clauses for the qualified column', () => {

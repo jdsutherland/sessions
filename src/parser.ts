@@ -233,28 +233,48 @@ function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
 /**
  * Rows the CLI writes into the transcript in a conversational role but that are
  * harness bookkeeping, not conversation: transport-error banners, interrupt
- * markers, tool-load acks. They are short, so FTS5's length normalization scores
- * them like a whole analysis, and most are USER rows — so they also collect the
- * user-hit boost. On the author's index, seven of the top ten hits for "rate
- * limiting" were `API Error: Rate limit reached`.
+ * markers, tool-load acks, client-side prompt scaffolding. They are short, so FTS5's
+ * length normalization scores them like a whole analysis, and most are USER rows — so
+ * they also collect the user-hit boost. On the author's index, seven of the top ten
+ * hits for "rate limiting" were `API Error: Rate limit reached`.
+ *
+ * These rows stay IN message_fts and are removed on the way OUT, in searchSessions —
+ * the same place junk cwds are filtered, and for the same reason: `grep_sessions` is
+ * exhaustive by contract, so "how many times did I hit a rate limit" has to keep
+ * finding every one of them. Two consequences worth keeping: the denylist is editable
+ * without a reindex, and adding an entry hides text from ranking rather than
+ * destroying it.
  *
  * Explicit strings only, deliberately — a length or shape heuristic here would eat
- * real short messages ("yes, use the raw body"). Extend the lists as new banners
- * show up; a SCHEMA_VERSION bump republishes the index without them.
+ * real short messages ("yes, use the raw body"). Counts below are occurrences in the
+ * author's index; extend the lists as new banners show up.
  */
 const NOISE_EXACT = new Set([
-  '[Request interrupted by user]',
+  '[Request interrupted by user]', // ×380
   '[Request interrupted by user for tool use]',
   'No response requested.',
-  'Tool loaded.',
+  'Tool loaded.', // ×33
+  'Keep up with the conversation and suggest replies', // ×132 — the most frequent of the lot
+  // A human could plausibly type this one, which is only safe because the filter runs
+  // on read: all 53 stay in grep, they just stop competing for a ranked slot.
+  'Continue from where you left off.', // ×53
 ]);
 
 /** The transport-error banner family: `API Error: 401 …`, `API Error: Rate limit reached`, … */
 const NOISE_PREFIXES = ['API Error: '];
 
-export function isHarnessNoise(text: string): boolean {
-  const t = text.trim();
-  return NOISE_EXACT.has(t) || NOISE_PREFIXES.some((p) => t.startsWith(p));
+/** The denylist as a parenthesized SQL predicate that is true for the rows that ARE
+ *  noise. `col` is the qualified text column (e.g. `m.text`). Parenthesized so a caller
+ *  can negate it or AND it into a WHERE clause as one term; the mirror of
+ *  `notJunkCwdSql` in wrapped/exclude.ts. SQL rather than a JS predicate because the
+ *  read path never materializes message text — a broad query matches tens of thousands
+ *  of rows and ~37MB of it. Comparisons are case-sensitive (`=`, not LIKE) so they
+ *  match the strings exactly as written above. */
+export function harnessNoiseSql(col: string): string {
+  const quote = (s: string): string => `'${s.replace(/'/g, "''")}'`;
+  const clauses = [`trim(${col}) IN (${[...NOISE_EXACT].map(quote).join(', ')})`];
+  for (const p of NOISE_PREFIXES) clauses.push(`substr(trim(${col}), 1, ${p.length}) = ${quote(p)}`);
+  return `(${clauses.join(' OR ')})`;
 }
 
 export interface GenuineUserTurn {

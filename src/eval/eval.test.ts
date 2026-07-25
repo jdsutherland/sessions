@@ -26,14 +26,16 @@ const RECALL_FLOOR: Record<Exclude<QueryClass, 'negative'>, RecallFloor> = {
   scoped: { recallAt5: 1, recallAt1: 1, mrr: 1 },
 };
 
-/** Serialized chars of the worst top-5 page in each class, as measured. */
+/** Serialized chars of the worst top-5 page in each class, as measured. Every class is
+ *  ~4 chars per result above the previous record: `filesTotal`/`commandsTotal` were
+ *  renamed to `filesIndexed`/`commandsIndexed`, which is two characters each. */
 const PAYLOAD_CEILING: Record<QueryClass, number> = {
-  'exact-error-string': 5806,
-  'file-path': 933,
-  command: 4332,
-  'multi-word-natural-language': 6486,
-  scoped: 2169,
-  negative: 5371,
+  'exact-error-string': 5826,
+  'file-path': 937,
+  command: 4352,
+  'multi-word-natural-language': 6506,
+  scoped: 2177,
+  negative: 5391,
 };
 
 // What the OR-join returns for queries nothing in the corpus answers. Three of five
@@ -66,11 +68,14 @@ test('corpus integrity: harness noise rows are not searchable', () => {
   expect(report.harnessOnlyHits).toBe(0);
 });
 
-test('corpus integrity: denylisted harness rows are not searchable in either role', () => {
-  // s03 carries the four banners verbatim, the user-role ones written the way Claude
-  // writes them (no promptSource, so they pass the genuine-turn gate). Dropping the
-  // isHarnessNoise guard at the message_fts insert makes this 1.
+test('corpus integrity: denylisted harness rows are filtered out of search, not out of the index', () => {
+  // s03 carries the banners verbatim, the user-role ones written the way Claude writes
+  // them (no promptSource, so they pass the genuine-turn gate). Dropping the read-path
+  // denylist in searchSessions makes the first line 1; dropping the rows at insert time
+  // instead — which is what this branch first did — makes the second line 0 and quietly
+  // breaks grep_sessions' exhaustiveness contract.
   expect(report.noiseOnlyHits).toBe(0);
+  expect(report.noiseGrepHits).toBeGreaterThan(0);
 });
 
 test.each(Object.keys(RECALL_FLOOR) as (keyof typeof RECALL_FLOOR)[])('recall ratchet: %s', (cls) => {

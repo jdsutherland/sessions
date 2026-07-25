@@ -21,7 +21,7 @@ import {
   getSessionMessages,
   extractSessionMetadata,
   summarizeMessages,
-  isHarnessNoise,
+  harnessNoiseSql,
 } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
@@ -31,7 +31,7 @@ import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb 
 import { readSessionLines, statSession } from './session-io';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
-import { isJunkCwd, notJunkCwdSql } from './wrapped/exclude';
+import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -74,9 +74,10 @@ function getCodexDir(): string {
 // v9: extractCommands clips each command to MAX_COMMAND_LEN on the way in, so the
 // stored `commands` column (and its FTS copy) needs a rebuild to shed the 9KB
 // one-liners v8 indexed verbatim.
-// v10: message_fts no longer stores harness bookkeeping rows (transport-error
-// banners, interrupt markers, tool-load acks — see isHarnessNoise in parser.ts),
-// which an existing index still holds as searchable, user-boosted text.
+// v10: bumped when harness bookkeeping rows were dropped at insert time. That filter
+// has since moved to the search read path (grep_sessions must stay exhaustive), so v10
+// changes nothing about what is written — but v9's command clipping still does, so an
+// index built before 10 has to rebuild and the number stays where it is.
 const SCHEMA_VERSION = 10;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
@@ -421,17 +422,14 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   );
   // Message rows: assistant turns always; user turns only when genuine — injected
   // skill bodies and tool results match everything and are exactly the noise the
-  // trust fixes eliminated elsewhere. Harness bookkeeping is dropped from BOTH roles:
-  // the interrupt markers and tool-load acks are user rows that pass isGenuineUserTurn,
-  // so an assistant-only gate would leave the worst offenders in. Their indices are
-  // still consumed by the numbering (extractMessages counts them), they just get no
-  // FTS row. db.query() caches the prepared statement, which matters at ~74
-  // rows/session; the calls run inside refreshIndex's per-batch transaction, never
-  // autocommit.
+  // trust fixes eliminated elsewhere. Harness bookkeeping (interrupt markers, transport
+  // banners, tool-load acks) is NOT dropped here: it is indexed and filtered on read,
+  // so grep_sessions stays exhaustive — see harnessNoiseSql in parser.ts.
+  // db.query() caches the prepared statement, which matters at ~74 rows/session; the
+  // calls run inside refreshIndex's per-batch transaction, never autocommit.
   const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
   for (const m of messages) {
     if (m.role === 'user' && !m.genuine) continue;
-    if (isHarnessNoise(m.text)) continue;
     insertMessage.run(filePath, m.index, m.role, m.text);
   }
   // Subagent transcripts have no place in the parent's message numbering, so their
@@ -648,9 +646,9 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   }
   // Automated sessions are removed from the candidate set, not down-weighted — a
   // throwaway repro under /tmp can match a query better than the real session did.
-  // The exception is a caller who scoped straight at a junk project: excluding what
-  // they explicitly asked for would be wrong.
-  if (!opts.includeAutomated && !isJunkCwd(project)) conditions.push(notJunkCwdSql('cwd'));
+  // The exception is a caller who scoped at or inside a junk root: excluding what they
+  // explicitly asked for would return nothing at all.
+  if (!opts.includeAutomated && !isJunkScope(project)) conditions.push(notJunkCwdSql('cwd'));
   if (opts.errored) conditions.push('errored = 1');
   // Files filter: substring match over the JSON-array text columns — callers pass a
   // path suffix or full path. Deliberately imprecise (a short fragment can match an
@@ -693,13 +691,20 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       msnippet: string;
       mlen: number;
     }
+    // Harness bookkeeping rows are dropped here rather than at the message_fts insert:
+    // the index stays complete for grep_sessions (exhaustive by contract) and a search
+    // never has to rank an `API Error: Rate limit reached`. Same read-path treatment as
+    // junk cwds above, and for the same reason. Filtered in SQL, not in the loop below,
+    // because that loop only ever sees a snippet and a length — pulling whole message
+    // text back to run the JS predicate costs ~37MB on the author's index for a query
+    // as ordinary as "the".
     const messageRows = db
       .query<MessageHitRow, [string]>(`
       SELECT file_path, msg_index, role,
              bm25(message_fts, 0.0, 0.0, 0.0, 1.0) AS mrank,
              snippet(message_fts, 3, '', '', '…', 32) AS msnippet,
              length(text) AS mlen
-      FROM message_fts WHERE message_fts MATCH ?
+      FROM message_fts WHERE message_fts MATCH ? AND NOT ${harnessNoiseSql('text')}
     `)
       .all(ftsQuery);
 

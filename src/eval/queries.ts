@@ -37,9 +37,10 @@ export const HARNESS_ONLY_TERM = 'investigation';
 
 /**
  * A term that appears in the corpus only inside s03's harness-noise rows (the
- * `[Request interrupted by user]` user turn). Nothing may match it: those rows are
- * denylisted at the message_fts insert, and the user-role ones are the worst
- * offenders because they also collect the 1.5× user-hit boost.
+ * `[Request interrupted by user]` user turn). No SEARCH result may match it: those rows
+ * are indexed but denylisted on the read path, and the user-role ones are the worst
+ * offenders because they also collect the 1.5× user-hit boost. `grep_sessions` still
+ * reaches them, which is the other half of the probe.
  */
 export const NOISE_ONLY_TERM = 'interrupted';
 

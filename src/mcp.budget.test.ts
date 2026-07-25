@@ -134,7 +134,7 @@ test('write path: a 9KB command reaches the index clipped to MAX_COMMAND_LEN', a
   const parsed = JSON.parse(res.content[0]!.text);
   const hit = parsed.find((r: { project: string }) => r.project === '/repoHuge-0');
   expect(hit).toBeDefined();
-  expect(hit.commandsTotal).toBe(1);
+  expect(hit.commandsIndexed).toBe(1);
   // Read path clips further, so assert the stored bound through the raw search result.
   const raw = await cache.searchSessions('migration', { limit: 20 });
   const stored = raw.find((r) => r.cwd === '/repoHuge-0')!.commands[0]!;
@@ -156,14 +156,16 @@ test('search_sessions stays under budget at the default limit over pathological 
   }
 });
 
-test('search_sessions reports the uncapped totals beside the capped arrays', async () => {
+test('search_sessions reports what the index holds beside the capped arrays', async () => {
   const res = await mcp.runSearchSessions({ query: 'mangowurzel', limit: 20 });
   const parsed = JSON.parse(res.content[0]!.text);
   const cmds = parsed.find((r: { project: string }) => r.project === '/repoCmds-0');
-  expect(cmds.commandsTotal).toBe(100); // MAX_COMMANDS, from 120 pushed
+  // 120 commands were run and the index keeps MAX_COMMANDS of them, so the reported
+  // count is the index's, not the session's — which is what `commandsIndexed` claims.
+  expect(cmds.commandsIndexed).toBe(100);
   expect(cmds.commands).toHaveLength(MAX_RESULT_COMMANDS);
   const files = parsed.find((r: { project: string }) => r.project === '/repoFiles-0');
-  expect(files.filesTotal).toBeGreaterThan(MAX_RESULT_FILES);
+  expect(files.filesIndexed).toBeGreaterThan(MAX_RESULT_FILES);
   expect(files.files).toHaveLength(MAX_RESULT_FILES);
 });
 

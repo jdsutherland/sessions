@@ -225,8 +225,18 @@ beforeAll(async () => {
       message: { role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] },
     },
     {
-      type: 'assistant',
+      type: 'user',
       timestamp: '2026-06-09T10:05:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'Keep up with the conversation and suggest replies' }] },
+    },
+    {
+      type: 'user',
+      timestamp: '2026-06-09T10:06:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'Continue from where you left off.' }] },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-09T10:07:00Z',
       message: { role: 'assistant', content: [{ type: 'text', text: 'the flimbertrove step needed a retry' }] },
     },
   ]);
@@ -291,6 +301,41 @@ beforeAll(async () => {
         role: 'user',
         content: [{ type: 'text', text: 'the plumbus was fine but the grommet needed replacing' }],
       },
+      promptSource: 'typed',
+    },
+  ]);
+
+  // Sessions N/O/P: throwaways sitting directly under a junk ROOT rather than in a
+  // named junk project — the shape `sessions .` produces when run from /tmp itself.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'n', '/tmp/scratch-one', [
+    {
+      type: 'user',
+      timestamp: '2026-06-14T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zibbleflax webhook scratch' }] },
+      promptSource: 'typed',
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'o', '/tmp/scratch-two', [
+    {
+      type: 'user',
+      timestamp: '2026-06-15T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zibbleflax webhook scratch again' }] },
+      promptSource: 'typed',
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'p', '/var/folders/2z/xxx/T/eval-zibbleflax', [
+    {
+      type: 'user',
+      timestamp: '2026-06-16T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zibbleflax under a temp root' }] },
+      promptSource: 'typed',
+    },
+  ]);
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'q', '/private/var/folders/2z/xxx/T/eval-zibbleflax', [
+    {
+      type: 'user',
+      timestamp: '2026-06-17T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'zibbleflax under the private temp root' }] },
       promptSource: 'typed',
     },
   ]);
@@ -670,6 +715,22 @@ test('a caller scoped straight at an automated project still gets it', async () 
   expect(all.map((x) => x.sessionId).sort()).toEqual(['g', 'h']);
 });
 
+test('scoping at a junk root returns its sessions instead of nothing', async () => {
+  // `sessions .` from /tmp (not a git repo, so the scope is /tmp itself) used to print
+  // "No sessions found": /tmp is not junk by its own `/tmp/` prefix rule, so the filter
+  // stayed on and excluded everything the scope selected. Neither surface exposes
+  // includeAutomated, so there was no way out of it.
+  const tmpScope = await cache.searchSessions('zibbleflax webhook scratch', { project: '/tmp' });
+  expect(tmpScope.map((x) => x.sessionId).sort()).toEqual(['n', 'o']);
+  // the substring rule has the same shape: /var/folders is a root, not a session cwd
+  const bare = await cache.searchSessions('zibbleflax', { project: '/var/folders' });
+  expect(bare.map((x) => x.sessionId)).toEqual(['p']);
+  const priv = await cache.searchSessions('zibbleflax', { project: '/private/var/folders' });
+  expect(priv.map((x) => x.sessionId)).toEqual(['q']);
+  // unscoped, all four are still removed — the exemption is the explicit scope, not the rule
+  expect(await cache.searchSessions('zibbleflax', {})).toEqual([]);
+});
+
 test('the automated filter applies to the no-query listing too', async () => {
   const r = await cache.searchSessions('', { limit: 100 });
   expect(r.map((x) => x.sessionId)).not.toContain('g');
@@ -679,7 +740,7 @@ test('grep stays exhaustive: it still reaches an automated cwd', async () => {
   expect((await cache.grepSessions('quaxolotl', {})).totalSessions).toBe(2);
 });
 
-test('harness noise rows are not searchable in either role', async () => {
+test('harness noise rows are filtered out of search in either role', async () => {
   // 'interrupted' and 'loaded' are user-role banners — the ones that would otherwise
   // also collect the user-hit boost; 'requested' is the assistant-role one.
   for (const term of ['interrupted', 'loaded', 'requested']) {
@@ -689,14 +750,36 @@ test('harness noise rows are not searchable in either role', async () => {
   // the genuine turns around them are untouched
   const r = await cache.searchSessions('flimbertrove', {});
   expect(r.map((x) => x.sessionId)).toEqual(['i']);
-  // 1 genuine user turn + 1 real assistant turn; the four banners get no row
-  expect(messageRowCount(join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'i.jsonl'))).toBe(2);
+  // the client-injected prompt scaffolding is denylisted the same way
+  for (const term of ['"suggest replies"', '"Continue from where you left off"']) {
+    expect((await cache.searchSessions(term, {})).map((x) => x.sessionId)).not.toContain('i');
+  }
+  // 1 genuine user turn + 1 real assistant turn + the six banners: every row is
+  // indexed, the filter runs on read.
+  expect(messageRowCount(join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'i.jsonl'))).toBe(8);
   // The transport-error banner is also counted as an error, so extractErrors still
   // copies it into session_fts.context_text and the session stays findable that way —
   // a metadata match with no message hit. Removing it there is a separate decision:
   // the same text drives `errored`, error_count and wrapped's error census.
   const api = (await cache.searchSessions('API Error', {})).find((x) => x.sessionId === 'i');
   expect(api?.messageHits).toEqual([]);
+});
+
+test('grep stays exhaustive: every harness noise row search hides is still findable', async () => {
+  // The contract search_sessions points callers at — "how many times did I hit a rate
+  // limit" has to be answerable — and the reason the denylist can grow without a
+  // reindex and without destroying anything.
+  for (const pattern of [
+    '[Request interrupted by user]',
+    'Tool loaded.',
+    'API Error: Rate limit reached',
+    'No response requested.',
+    'Keep up with the conversation and suggest replies',
+    'Continue from where you left off.',
+  ]) {
+    const g = await cache.grepSessions(pattern, {});
+    expect([pattern, g.totalHits]).toEqual([pattern, 1]);
+  }
 });
 
 test('damping: a substantive message outranks a short aside carrying the same term', async () => {

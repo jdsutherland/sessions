@@ -32,12 +32,17 @@ export interface FormattedResult {
   title: string | null;
   snippet: string;
   messageCount: number;
-  /** Capped at MAX_RESULT_FILES / MAX_RESULT_COMMANDS; the totals say how much was
-   *  dropped so truncation is honest rather than silent (same shape grep_sessions uses). */
+  /** Capped at MAX_RESULT_FILES / MAX_RESULT_COMMANDS; the counts beside them say how
+   *  much the page dropped, so truncation is visible rather than silent.
+   *  `*Indexed`, not `*Total`: the index itself holds at most extract-files' MAX_FILES
+   *  (50) and extract-commands' MAX_COMMANDS (100) per session, so these are a floor on
+   *  the real number, not the real number. Recovering the true total means storing the
+   *  pre-cap count at index time — a new column, a schema bump, and a full reindex to
+   *  buy a figure nothing reads; the name is what was wrong, so the name changed. */
   files: string[];
-  filesTotal: number;
+  filesIndexed: number;
   commands: string[];
-  commandsTotal: number;
+  commandsIndexed: number;
   errored: boolean;
   exists: boolean;
   filePath: string;
@@ -60,9 +65,9 @@ export function formatResult(r: SessionResult): FormattedResult {
     snippet: r.displayText,
     messageCount: r.messageCount,
     files: r.files.slice(0, MAX_RESULT_FILES),
-    filesTotal: r.files.length,
+    filesIndexed: r.files.length,
     commands: r.commands.slice(0, MAX_RESULT_COMMANDS).map(clipCommand),
-    commandsTotal: r.commands.length,
+    commandsIndexed: r.commands.length,
     errored: r.errored,
     exists: r.exists,
     filePath: r.filePath,

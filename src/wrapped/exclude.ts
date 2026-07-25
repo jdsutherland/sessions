@@ -15,8 +15,8 @@
 // `searchSessions` also uses this rule (see SearchOptions.includeAutomated): junk
 // cwds are ~43% of a real index and are never the session a search is looking for,
 // so they are removed from the candidate set rather than out-ranked. A caller who
-// scopes directly at a junk project still gets it, and `grep_sessions` — exhaustive
-// by contract — never applies the rule at all.
+// scopes at or inside a junk root still gets it (see `isJunkScope`), and
+// `grep_sessions` — exhaustive by contract — never applies the rule at all.
 
 /** Substring the cwd must NOT contain. */
 const JUNK_SUBSTRINGS = [
@@ -41,6 +41,29 @@ export function isJunkCwd(cwd: string | undefined): boolean {
   if (JUNK_PREFIXES.some((p) => cwd.startsWith(p))) return true;
   if (JUNK_SUFFIXES.some((s) => cwd.endsWith(s))) return true;
   return false;
+}
+
+/**
+ * True when a search scope is a junk root itself, or sits at or inside one — the case
+ * where applying the junk filter would exclude every session the scope selects.
+ *
+ * `isJunkCwd` alone is not that test: the rules are written as the prefixes a *session*
+ * cwd has ("/tmp/"), so `/tmp` fails its own rule and `sessions .` run from /tmp (not a
+ * git repo, so the scope is /tmp itself) reported "No sessions found". Ancestors count
+ * too — a scope of `/private` selects `/private/tmp/...` — and the caller asked for
+ * them explicitly, which is the whole exemption.
+ */
+export function isJunkScope(scope: string | undefined): boolean {
+  if (!scope) return false;
+  if (isJunkCwd(scope)) return true;
+  const dir = scope.endsWith('/') ? scope : scope + '/';
+  // The scope is the root a rule is written relative to, or an ancestor of it:
+  // '/tmp/'.startsWith('/tmp/'), '/var/folders/'.startsWith('/var/').
+  if ([...JUNK_SUBSTRINGS, ...JUNK_PREFIXES].some((rule) => rule.startsWith(dir))) return true;
+  // Or it ends exactly at a substring rule's root, where the trailing slash is the only
+  // thing isJunkCwd was missing: '/private/var/folders'.
+  if (JUNK_SUBSTRINGS.some((s) => dir.includes(s))) return true;
+  return false; // suffix rules have no enumerable ancestors; isJunkCwd already caught the exact dir
 }
 
 /** The same rule as `isJunkCwd`, as a single parenthesized SQL predicate that is

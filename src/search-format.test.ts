@@ -42,9 +42,9 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     snippet: 'snip',
     messageCount: 5,
     files: ['/r/a.ts'],
-    filesTotal: 1,
+    filesIndexed: 1,
     commands: ['bun test'],
-    commandsTotal: 1,
+    commandsIndexed: 1,
     errored: true,
     exists: true,
     filePath: '/f.jsonl',
@@ -96,16 +96,16 @@ test('formatLine: no msg# badge when there are no message hits', () => {
 
 // ——— payload bounds — additive ———
 
-test('formatResult: caps the emitted arrays and reports the uncapped totals', () => {
+test('formatResult: caps the emitted arrays and reports how many it was given', () => {
   const out = formatResult({
     ...baseResult,
     files: Array.from({ length: MAX_RESULT_FILES + 30 }, (_, i) => `/r/f${i}.ts`),
     commands: Array.from({ length: MAX_RESULT_COMMANDS + 40 }, (_, i) => `cmd${i}`),
   });
   expect(out.files).toHaveLength(MAX_RESULT_FILES);
-  expect(out.filesTotal).toBe(MAX_RESULT_FILES + 30);
+  expect(out.filesIndexed).toBe(MAX_RESULT_FILES + 30);
   expect(out.commands).toHaveLength(MAX_RESULT_COMMANDS);
-  expect(out.commandsTotal).toBe(MAX_RESULT_COMMANDS + 40);
+  expect(out.commandsIndexed).toBe(MAX_RESULT_COMMANDS + 40);
 });
 
 test('formatResult: clips a command to its first line and marks the loss', () => {
