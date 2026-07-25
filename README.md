@@ -368,7 +368,15 @@ bun run typecheck            # Type-check with tsc
 bun run lint                 # Lint with oxlint
 bun run format               # Format with oxfmt
 bun run format:check         # Check formatting without writing
+bun test                     # Run the test suite
 ```
+
+Two opt-in differential suites are skipped by default because their corpus is
+not the repo's: `SESSIONS_DIFFERENTIAL=1` re-parses every transcript on this
+machine, and `SESSIONS_ORACLE=1` checks the trajectory export against
+`@letta-ai/trajectory`'s own normalizer over the committed fixtures. That
+package is a devDependency oracle — the export has hand-written types and the
+compiled binary carries no dependency on it.
 
 ### Cross-compilation
 
