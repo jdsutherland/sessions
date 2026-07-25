@@ -32,6 +32,10 @@ ${C.bold}Commands:${C.reset}
   context          Print a context primer for the current repo (markdown)
                    --full widens detail; --limit/--days/--tool filter; --worktree
                    narrows to the current worktree; --out <path> writes to a file
+  lessons          Lessons saved for this repo — what past sessions concluded,
+                   not what they did. review resolves conflicts, export writes
+                   them out as JSON, audit traces deferred provenance, retire
+                   takes one out of service. Stored outside the search index
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
@@ -49,8 +53,10 @@ ${C.bold}Commands:${C.reset}
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY
-  uninstall        Remove plugin, MCP config, and the SessionStart hook
-  cleanup          Uninstall plugin + clear search index (full reset)
+  uninstall        Remove plugin, MCP config, and the SessionStart hook. Saved
+                   lessons are kept; --purge-lessons --yes deletes them too
+  cleanup          Uninstall plugin + clear search index (full reset). Keeps
+                   saved lessons — they are not re-derivable from transcripts
 
 ${C.bold}Search:${C.reset}
   With no argument, opens fzf with session summaries.

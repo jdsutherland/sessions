@@ -21,6 +21,7 @@ Recall past work on a specific project or topic.
    - **Needle** — "what did we decide about X?" → search, then read just the matched exchange.
    - **Arc** — "where did we leave off on X?" → digest the relevant session(s).
    - **Artifact** — "what happened to this file?" → search with the `files` filter.
+   - **Standing** — "have we hit this before?", "why is it done this way?" → call `get_context_primer` first. Its `lessons` are conclusions somebody chose to keep; no transcript states them outright, and searching for one costs several calls and often misses.
 
 2. **Find candidate sessions.** Call `search_sessions`:
    - Needle/arc: `query` = topic keywords; add `project` if a path was given; `limit`: 10.
@@ -43,6 +44,7 @@ Recall past work on a specific project or topic.
 
 ## Guidelines
 
+- A lesson with `verified: false` cannot be traced back to the conversation that produced it — still usable, but say so if the user leans on it. `lessonsFlagged > 0` means lessons contradict each other and are being withheld; report the count rather than picking a side.
 - Budget discipline: digests are bounded, transcripts are not. Prefer one digest over five pages of messages; expand at most the exchanges you need.
 - If a digest returns empty `exchanges` (no genuine human turns), fall back to `get_session_messages`.
 - Order chronologically (oldest first) to show the arc of work.

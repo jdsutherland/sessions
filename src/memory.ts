@@ -241,7 +241,9 @@ export function normalizeText(s: string): string {
 
 export function contentHash(lesson: string, scope: Scope, repoKey: string): string {
   const h = new Bun.CryptoHasher('sha256');
-  h.update(`${normalizeText(lesson)} ${scope} ${repoKey}`);
+  // \0 as the field separator: it cannot occur in a lesson, a scope, or a repo
+  // path, so no combination of the three can collide with another.
+  h.update(`${normalizeText(lesson)}\0${scope}\0${repoKey}`);
   return h.digest('hex');
 }
 
@@ -256,12 +258,30 @@ const STOPWORDS = new Set(
   ).split(' '),
 );
 
+function contentWords(s: string): string[] {
+  return normalizeText(s)
+    .split(' ')
+    .filter((t) => t.length > 0 && !STOPWORDS.has(t));
+}
+
 function similarityTokens(s: string): Set<string> {
-  return new Set(
-    normalizeText(s)
-      .split(' ')
-      .filter((t) => t.length > 0 && !STOPWORDS.has(t)),
-  );
+  return new Set(contentWords(s));
+}
+
+/**
+ * The same content words in the same order — a rewording, not a different claim.
+ *
+ * A token set cannot see arrangement, and arrangement is where a negation flips: "the
+ * budget is per-endpoint, not per-account" and "the budget is per-account, not
+ * per-endpoint" are a perfect 1.0 against each other. Calling that a duplicate would
+ * throw away the correction and keep serving the stale one — the conflict failure in
+ * its worst form, because nothing is flagged and nobody is told. So identical order is
+ * what "already known" requires; anything else goes to review.
+ */
+export function sameStatement(a: string, b: string): boolean {
+  const x = contentWords(a);
+  const y = contentWords(b);
+  return x.length === y.length && x.every((t, i) => t === y[i]);
 }
 
 /**
@@ -492,24 +512,30 @@ export function rememberLesson(input: RememberInput): RememberResult {
   }
 
   const candidates = superseded ? [] : shortlist(db, lesson, scope, container);
-  let best: { row: LessonRow; j: number } | null = null;
+  let same: LessonRow | null = null;
   const band: LessonRow[] = [];
   for (const row of candidates) {
     const j = jaccard(lesson, row.lesson);
-    if (!best || j > best.j) best = { row, j };
-    if (j >= REVIEW_JACCARD && j < SAME_LESSON_JACCARD) band.push(row);
+    if (j < REVIEW_JACCARD) continue;
+    if (j >= SAME_LESSON_JACCARD && sameStatement(lesson, row.lesson)) {
+      same = row;
+      break;
+    }
+    // Everything else that overlaps this much is contested, including a perfect
+    // token-set match whose words are rearranged.
+    band.push(row);
   }
 
   // Same lesson worded differently — treat it as a recurrence, not a new row.
-  if (best && best.j >= SAME_LESSON_JACCARD) {
-    db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, best.row.id]);
+  if (same) {
+    db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, same.id]);
     return {
       outcome: 'known',
-      id: best.row.id,
-      status: best.row.status,
-      provenance: best.row.provenance,
-      verified: best.row.source_verified === 1,
-      message: `already known — lesson #${best.row.id} says the same thing ("${best.row.lesson}"). Last seen bumped, nothing inserted.`,
+      id: same.id,
+      status: same.status,
+      provenance: same.provenance,
+      verified: same.source_verified === 1,
+      message: `already known — lesson #${same.id} says the same thing ("${same.lesson}"). Last seen bumped, nothing inserted.`,
     };
   }
 
@@ -690,6 +716,14 @@ export function resolveReview(group: number, choice: ReviewChoice, now = new Dat
   })();
 
   return rows.length;
+}
+
+/** Take a lesson out of service by hand. Marked, never removed — the text stays readable. */
+export function retireLesson(id: number): boolean {
+  const db = getMemoryDb();
+  if (!db || _readonly) return false;
+  db.run("UPDATE lessons SET status = 'retired' WHERE id = ? AND status IN ('active', 'needs_review')", [id]);
+  return (db.query<{ n: number }, []>('SELECT changes() AS n').get()?.n ?? 0) > 0;
 }
 
 /** Rows whose session is unknown but whose tool_use id is traceable in the transcripts. */

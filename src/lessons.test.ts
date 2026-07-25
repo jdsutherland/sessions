@@ -1,0 +1,127 @@
+import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const fixtureRoot = mkdtempSync(join(tmpdir(), 'sessions-lessons-'));
+const claudeDir = join(fixtureRoot, 'claude', 'projects');
+const memoryDb = join(fixtureRoot, 'memory.db');
+
+function setEnv(): void {
+  process.env.SESSIONS_CLAUDE_DIR = claudeDir;
+  process.env.SESSIONS_MEMORY_DB = memoryDb;
+}
+setEnv();
+
+const mem = await import('./memory');
+const lessons = await import('./lessons');
+
+const REPO = '/repo/alpha';
+const TOOL_USE_ID = 'toolu_01LRwxAbCdEfGhIjKlMn';
+
+function saveDeferred(lesson: string, toolUseId: string | null) {
+  return mem.rememberLesson({
+    lesson,
+    container: REPO,
+    source: {
+      sessionId: null,
+      transcript: null,
+      toolUseId,
+      provenance: toolUseId ? 'deferred' : 'none',
+      verified: false,
+      tool: toolUseId ? 'claude' : '',
+    },
+  });
+}
+
+/** A transcript carrying the tool_use id verbatim, the way Claude Code writes it. */
+function writeTranscript(sessionId: string, toolUseId: string): string {
+  const dir = join(claudeDir, '-repo-alpha');
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${sessionId}.jsonl`);
+  writeFileSync(
+    path,
+    JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name: 'remember_lesson' }] },
+    }) + '\n',
+  );
+  return path;
+}
+
+beforeEach(() => {
+  setEnv();
+  mem.closeMemoryDb();
+  rmSync(memoryDb, { force: true });
+  rmSync(claudeDir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  mem.closeMemoryDb();
+  rmSync(fixtureRoot, { recursive: true, force: true });
+});
+
+describe('parseLessonsArgs', () => {
+  test('defaults to listing this repo', () => {
+    expect(lessons.parseLessonsArgs([])).toEqual({ action: 'list', all: false });
+  });
+
+  test('parses each subcommand and its flags', () => {
+    expect(lessons.parseLessonsArgs(['--all']).all).toBe(true);
+    expect(lessons.parseLessonsArgs(['review', '--keep', 'both'])).toMatchObject({ action: 'review', keep: 'both' });
+    expect(lessons.parseLessonsArgs(['export', '--out', 'l.json'])).toMatchObject({ action: 'export', out: 'l.json' });
+    expect(lessons.parseLessonsArgs(['audit']).action).toBe('audit');
+    expect(lessons.parseLessonsArgs(['retire', '7'])).toMatchObject({ action: 'retire', id: 7 });
+  });
+});
+
+describe('audit recovers deferred provenance', () => {
+  test('a tool-use id found in a transcript promotes the row to recovered', () => {
+    saveDeferred('A lesson saved when the session id was unknown.', TOOL_USE_ID);
+    const transcript = writeTranscript('11772ef1-6b80-46ec-9f32-97cd785efa1f', TOOL_USE_ID);
+
+    const res = lessons.auditDeferred();
+    expect(res).toMatchObject({ scanned: 1, recovered: 1, unresolved: 0, grepFailed: false });
+
+    const row = mem.listLessons({ all: true })[0]!;
+    expect(row.provenance).toBe('recovered');
+    expect(row.source_session).toBe('11772ef1-6b80-46ec-9f32-97cd785efa1f');
+    expect(row.source_transcript).toBe(transcript);
+    expect(row.source_verified).toBe(1);
+  });
+
+  test('a tool-use id in no transcript stays deferred rather than being guessed at', () => {
+    saveDeferred('A lesson whose transcript is gone.', TOOL_USE_ID);
+    mkdirSync(claudeDir, { recursive: true });
+
+    const res = lessons.auditDeferred();
+    expect(res).toMatchObject({ scanned: 1, recovered: 0, unresolved: 1 });
+    const row = mem.listLessons({ all: true })[0]!;
+    expect(row.provenance).toBe('deferred');
+    expect(row.source_session).toBeNull();
+  });
+
+  test('rows with no tool-use id are not scanned — there is nothing to trace', () => {
+    saveDeferred('A lesson with no anchor at all.', null);
+    expect(lessons.auditDeferred()).toMatchObject({ scanned: 0, recovered: 0 });
+  });
+
+  test('the audit does not touch a row whose provenance is already established', () => {
+    mem.rememberLesson({
+      lesson: 'A lesson that already knows where it came from.',
+      container: REPO,
+      source: {
+        sessionId: 'sess-known',
+        transcript: '/transcripts/sess-known.jsonl',
+        toolUseId: TOOL_USE_ID,
+        provenance: 'hook',
+        verified: true,
+        tool: 'claude',
+      },
+    });
+    writeTranscript('some-other-session', TOOL_USE_ID);
+
+    expect(lessons.auditDeferred().scanned).toBe(0);
+    expect(mem.listLessons({ all: true })[0]!.source_session).toBe('sess-known');
+  });
+});

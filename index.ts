@@ -84,6 +84,12 @@ if (command === 'context') {
   process.exit(0);
 }
 
+if (command === 'lessons') {
+  const { parseLessonsArgs, runLessons } = await import('./src/lessons.ts');
+  await runLessons(parseLessonsArgs(Bun.argv.slice(3)));
+  process.exit(0);
+}
+
 if (command === 'digest') {
   const { parseDigestArgs, runDigest } = await import('./src/digest.ts');
   await runDigest(parseDigestArgs(Bun.argv.slice(3)));

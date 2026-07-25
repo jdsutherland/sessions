@@ -240,6 +240,29 @@ describe('jaccard thresholds', () => {
     expect(overFlagged.length).toBeLessThanOrEqual(1);
   });
 
+  // Set similarity is blind to word order, so a claim and its reversal score a
+  // perfect 1.0. sameStatement is the guard, and these are the pairs that prove it
+  // is load-bearing rather than decorative.
+  const REVERSALS: [string, string][] = [
+    ['The retry budget is per-endpoint, not per-account.', 'The retry budget is per-account, not per-endpoint.'],
+    ['Bound lesson length at write, not at read.', 'Bound lesson length at read, not at write.'],
+    ['Prefer the container key over the remote key.', 'Prefer the remote key over the container key.'],
+  ];
+
+  test('a reversed claim scores as identical and is still not the same statement', () => {
+    for (const [a, b] of REVERSALS) {
+      expect(mem.jaccard(a, b)).toBe(1);
+      expect(mem.sameStatement(a, b)).toBe(false);
+    }
+  });
+
+  test('a genuine reword is the same statement', () => {
+    for (const [a, b, label] of PAIRS) {
+      if (label !== 'same') continue;
+      expect(mem.sameStatement(a, b)).toBe(true);
+    }
+  });
+
   test('jaccard is symmetric and self-identical', () => {
     const [a, b] = PAIRS[4]!;
     expect(mem.jaccard(a, b)).toBeCloseTo(mem.jaccard(b, a), 10);
@@ -285,6 +308,18 @@ describe('near-duplicates flag both rows', () => {
     expect(again.outcome).toBe('known');
     expect(again.id).toBe(first.id!);
     expect(mem.countLessons()).toBe(1);
+  });
+
+  test('a reversed claim is flagged as a conflict, not swallowed as a duplicate', () => {
+    const first = save('The retry budget is per-endpoint, not per-account.');
+    const reversed = save('The retry budget is per-account, not per-endpoint.');
+
+    expect(reversed.outcome).toBe('conflict');
+    expect(reversed.conflicts).toEqual([
+      { id: first.id!, lesson: 'The retry budget is per-endpoint, not per-account.' },
+    ]);
+    expect(mem.countLessons()).toBe(2);
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).flagged).toBe(2);
   });
 
   test('a lesson in another repo never conflicts with this one', () => {
