@@ -13,6 +13,7 @@ import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
 import { localDate } from '../report/parsers/util.ts';
+import { defaultTz } from '../report/period.ts';
 import { writeStdoutFully } from '../stdout.ts';
 import { computeEventStats, computeLoops, longestGapRange, longestStreakRange } from './compute.ts';
 import { collectClaudeUserTurns } from './loops.ts';
@@ -93,7 +94,7 @@ Options:
 
 export function parseWrappedArgs(argv: string[]): WrappedOptions {
   const opts: WrappedOptions = {
-    tz: process.env['TIMEZONE'] ?? 'America/Chicago',
+    tz: defaultTz(),
     stdout: false,
   };
   let i = 0;

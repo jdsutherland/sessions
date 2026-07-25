@@ -4,6 +4,11 @@
 
 export type PeriodPreset = 'today' | 'this-week' | 'this-month' | 'last-month' | 'this-year' | 'month';
 
+/** The timezone every consumer buckets days and hours by, unless one is passed explicitly. */
+export function defaultTz(): string {
+  return process.env['TIMEZONE'] ?? 'America/Chicago';
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, '0');
 }

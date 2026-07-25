@@ -8,7 +8,7 @@ import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
 import { loadRuntimePricing } from './pricing-cache.ts';
-import { resolvePeriod, type PeriodPreset } from './period.ts';
+import { resolvePeriod, defaultTz, type PeriodPreset } from './period.ts';
 import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
 import { writeStdoutFully } from '../stdout.ts';
@@ -50,7 +50,7 @@ function die(msg: string): never {
 export function parseReportArgs(argv: string[]): ReportOptions {
   const opts: ReportOptions = {
     format: 'html',
-    tz: process.env['TIMEZONE'] ?? 'America/Chicago',
+    tz: defaultTz(),
     stdout: false,
   };
   let i = 0;

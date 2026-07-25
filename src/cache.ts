@@ -10,7 +10,6 @@ import {
   type DigestProjectGroup,
   type DigestDay,
   type DigestSessionDetail,
-  type SessionMetrics,
   type ContextPrimer,
   type ContextSession,
   type ContextHeadline,
@@ -1181,70 +1180,6 @@ export async function getActivityDigest(
     tools: toolCounts,
     projects: [...projectSet],
     days,
-  };
-}
-
-export async function getSessionMetrics(
-  startDate: string,
-  endDate: string,
-  toolFilter: Tool | '',
-  project: string,
-): Promise<SessionMetrics> {
-  const db = getDb();
-  await ensureIndexFresh();
-
-  const rows = queryDateRange(db, startDate, endDate, toolFilter, project);
-
-  const toolBreakdown: Record<string, number> = {};
-  const projectMap = new Map<string, { sessions: number; messages: number }>();
-  const dailyMap = new Map<string, { sessions: number; messages: number }>();
-  const activeHours: Record<string, number> = {};
-  let totalMessages = 0;
-
-  for (const r of rows) {
-    toolBreakdown[r.tool] = (toolBreakdown[r.tool] ?? 0) + 1;
-    totalMessages += r.message_count;
-
-    const pm = projectMap.get(r.cwd) ?? { sessions: 0, messages: 0 };
-    pm.sessions++;
-    pm.messages += r.message_count;
-    projectMap.set(r.cwd, pm);
-
-    const day = r.created_at;
-    const dm = dailyMap.get(day) ?? { sessions: 0, messages: 0 };
-    dm.sessions++;
-    dm.messages += r.message_count;
-    dailyMap.set(day, dm);
-  }
-
-  for (const r of rows) {
-    try {
-      const lines = readSessionLines(r.file_path, r.tool as Tool);
-      const d = JSON.parse(lines[0] ?? '{}');
-      const ts = d.timestamp as string | undefined;
-      if (ts && ts.includes('T')) {
-        const hour = ts.slice(11, 13);
-        activeHours[hour] = (activeHours[hour] ?? 0) + 1;
-      }
-    } catch {}
-  }
-
-  const projectBreakdown = [...projectMap.entries()]
-    .map(([p, v]) => ({ project: p, sessions: v.sessions, messages: v.messages }))
-    .sort((a, b) => b.sessions - a.sessions);
-
-  const dailyActivity = [...dailyMap.entries()]
-    .map(([date, v]) => ({ date, sessions: v.sessions, messages: v.messages }))
-    .sort((a, b) => (a.date > b.date ? 1 : -1));
-
-  return {
-    period: { start: startDate, end: endDate },
-    totalSessions: rows.length,
-    totalMessages,
-    toolBreakdown,
-    projectBreakdown,
-    dailyActivity,
-    activeHours,
   };
 }
 

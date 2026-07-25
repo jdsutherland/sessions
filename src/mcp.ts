@@ -1,7 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions, grepSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
+import { searchSessions, grepSessions, getActivityDigest, getContextPrimer } from './cache';
+import { getSessionMetrics } from './report/metrics';
 import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages } from './record';
 import { buildSessionDigest } from './digest';
@@ -270,7 +271,7 @@ server.tool(
 
 server.tool(
   'get_session_metrics',
-  'Get usage metrics for AI coding sessions within a date range. Returns tool breakdown, project breakdown, daily activity counts, and active hours heatmap.',
+  'Get usage metrics for AI coding sessions within a date range. Returns tool breakdown, project breakdown, daily activity counts, and an activeHours heatmap of message counts by hour ("00".."23", already in the local timezone — do not shift them). Days and hours bucket by $TIMEZONE (default America/Chicago), the same as `sessions report`.',
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),

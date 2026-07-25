@@ -32,7 +32,7 @@ Show session usage metrics and analytics.
    Show each day in the range.
 
    **Active Hours**
-   Render the hours heatmap as a simple bar chart or table showing which hours of the day have the most sessions. Convert to local time labels (e.g., "9am", "2pm").
+   Render the hours heatmap as a simple bar chart or table showing which hours of the day are busiest. Keys are local hours already ("14" is 2pm where the user lives) — label them, never shift them.
 
 ## Guidelines
 
