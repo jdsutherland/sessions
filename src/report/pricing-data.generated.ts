@@ -3,7 +3,7 @@
 // Source: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 import type { ModelPricing } from './pricing.ts';
 
-export const GENERATED_AT = '2026-07-12T02:36:05.556Z';
+export const GENERATED_AT = '2026-07-25T20:13:55.060Z';
 export const SOURCE_COMMIT = 'litellm-main';
 
 export const PRICING: Record<string, ModelPricing> = {
@@ -126,6 +126,12 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheWritePerToken: 0.00000625,
   },
   'claude-opus-4-8': {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.000025,
+    cacheReadPerToken: 5e-7,
+    cacheWritePerToken: 0.00000625,
+  },
+  'claude-opus-5': {
     inputPerToken: 0.000005,
     outputPerToken: 0.000025,
     cacheReadPerToken: 5e-7,
