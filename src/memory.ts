@@ -421,6 +421,24 @@ function reject(message: string): RememberResult {
   return { outcome: 'rejected', message };
 }
 
+/**
+ * "Already known" is misleading when the matched row is out of service — an agent
+ * would read it as "this is on file and being used". Say which it is: a retirement or
+ * a supersession is a decision someone made, and re-saving the text does not undo it.
+ */
+function statusNote(row: LessonRow): string {
+  switch (row.status) {
+    case 'active':
+      return '';
+    case 'retired':
+      return ' Note: that lesson was retired and is not served — do not re-save it, raise it with the user instead.';
+    case 'superseded':
+      return ` Note: that lesson was superseded by #${row.superseded_by} and is not served.`;
+    case 'needs_review':
+      return ' Note: that lesson is flagged as conflicting and is withheld until a human resolves it.';
+  }
+}
+
 function insertFts(db: Database, id: number, lesson: string, detail: string): void {
   db.run('DELETE FROM lessons_fts WHERE id = ?', [id]);
   db.run('INSERT INTO lessons_fts (id, lesson, detail) VALUES (?, ?, ?)', [id, lesson, detail]);
@@ -496,7 +514,7 @@ export function rememberLesson(input: RememberInput): RememberResult {
       status: existing.status,
       provenance: existing.provenance,
       verified: existing.source_verified === 1,
-      message: `already known — lesson #${existing.id}, last seen bumped. Nothing inserted.`,
+      message: `already known — lesson #${existing.id}, last seen bumped. Nothing inserted.${statusNote(existing)}`,
     };
   }
 
@@ -535,7 +553,7 @@ export function rememberLesson(input: RememberInput): RememberResult {
       status: same.status,
       provenance: same.provenance,
       verified: same.source_verified === 1,
-      message: `already known — lesson #${same.id} says the same thing ("${same.lesson}"). Last seen bumped, nothing inserted.`,
+      message: `already known — lesson #${same.id} says the same thing ("${same.lesson}"). Last seen bumped, nothing inserted.${statusNote(same)}`,
     };
   }
 

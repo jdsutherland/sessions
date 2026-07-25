@@ -374,6 +374,38 @@ describe('review resolution', () => {
   });
 });
 
+describe('retiring by hand', () => {
+  test('a retired lesson leaves the primer but stays readable', () => {
+    const saved = save('A lesson that should not have been saved.');
+    expect(mem.retireLesson(saved.id!)).toBe(true);
+
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons).toEqual([]);
+    const row = mem.listLessons({ all: true })[0]!;
+    expect(row.status).toBe('retired');
+    expect(row.lesson).toBe('A lesson that should not have been saved.');
+  });
+
+  test('retiring an unknown or already-retired lesson reports no change', () => {
+    const saved = save('A lesson that should not have been saved.');
+    expect(mem.retireLesson(999)).toBe(false);
+    expect(mem.retireLesson(saved.id!)).toBe(true);
+    expect(mem.retireLesson(saved.id!)).toBe(false);
+  });
+
+  test('a retired lesson does not block re-saving the same text later', () => {
+    const saved = save('A lesson that should not have been saved.');
+    mem.retireLesson(saved.id!);
+    // The content hash is still taken, so this is recognized rather than duplicated —
+    // and the retirement holds, which the caller is told rather than left to assume.
+    const again = save('A lesson that should not have been saved.');
+    expect(again.outcome).toBe('known');
+    expect(again.status).toBe('retired');
+    expect(again.message).toContain('was retired and is not served');
+    expect(mem.countLessons()).toBe(1);
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons).toEqual([]);
+  });
+});
+
 describe('explicit supersession', () => {
   test('supersedes retires the old row and skips the review band', () => {
     const first = save('The lesson store lives outside the cache directory.');

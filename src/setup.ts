@@ -301,6 +301,7 @@ export function runUninstall(opts: UninstallOptions = {}): void {
 /** Say plainly what was kept and where, or purge it if the user explicitly asked twice. */
 function reportLessons(w: (s: string) => void, opts: UninstallOptions): void {
   const kept = countLessons();
+  if (kept === 0) return; // nothing saved: no warning to give and nothing to purge
 
   if (opts.purgeLessons) {
     // --yes is required whether or not there is a TTY. Gating only the interactive
@@ -320,7 +321,6 @@ function reportLessons(w: (s: string) => void, opts: UninstallOptions): void {
     return;
   }
 
-  if (kept === 0) return;
   w(
     `  ${C.dim}Kept ${kept} lesson${kept === 1 ? '' : 's'} at ${getMemoryDbPath()} — not re-derivable from transcripts.${C.reset}\n` +
       `  ${C.dim}Export: sessions lessons export --out lessons.json   Delete: sessions uninstall --purge-lessons${C.reset}\n`,
