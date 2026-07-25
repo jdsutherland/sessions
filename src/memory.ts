@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { getMemoryDbPath } from './paths';
 import type { SessionProvenance } from './provenance';
 import type { ContextLesson, Provenance } from './types';
@@ -125,10 +125,15 @@ export function applyMigrations(db: Database, ladder: Migration[] = MIGRATIONS):
   if (from > target) throw new Error(`${TOO_NEW} (file v${from}, this build v${target})`);
   for (const m of ladder) {
     if (m.to <= from) continue;
+    // IMMEDIATE, with the version re-read under the write lock. Two sessions opening a
+    // brand-new store at the same moment both read version 0 out here, and a step is a
+    // CREATE TABLE — the second one to arrive must see the first one's commit and skip,
+    // not fail the open with "table lessons already exists".
     db.transaction(() => {
+      if (userVersion(db) >= m.to) return;
       m.up(db);
       db.run(`PRAGMA user_version = ${m.to}`);
-    })();
+    }).immediate();
   }
   return target;
 }
@@ -172,9 +177,33 @@ function quarantine(path: string): string {
 }
 
 /**
+ * Corrupt stores set aside beside the live one.
+ *
+ * quarantine() keeps every byte, but a rename nobody is told about reads exactly like
+ * "you never saved anything". Reported by every surface that would otherwise show an
+ * empty store, and it keeps being reported until the file is recovered or deleted —
+ * whatever gets written next diverges from it with no merge path.
+ */
+export function quarantinedStores(): string[] {
+  const path = getMemoryDbPath();
+  const dir = dirname(path);
+  const prefix = `${basename(path)}.corrupt-`;
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.startsWith(prefix) && !/-(wal|shm|journal)$/.test(f))
+      .sort()
+      .map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Open the store. `create` is false by default so a read never conjures a database —
  * a machine that has never saved a lesson has no memory.db, and the primer must be a
- * clean no-op there rather than leaving an empty file behind.
+ * clean no-op there rather than leaving an empty file behind. Corruption is held to
+ * the same contract: the bytes are set aside and the reader is told there is nothing,
+ * never handed a fresh empty file to start writing a second store into.
  */
 export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
   const path = getMemoryDbPath();
@@ -189,6 +218,7 @@ export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
   } catch (e) {
     if (!isCorruption(e)) throw e;
     quarantine(path);
+    if (!opts.create) return null;
     db = openAt(path);
   }
 
@@ -205,6 +235,7 @@ export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
       db.close();
       if (!isCorruption(e)) throw e;
       quarantine(path);
+      if (!opts.create) return null;
       db = openAt(path);
       applyMigrations(db);
     }
@@ -321,9 +352,11 @@ export interface RepoLessons {
   flagged: number;
   /** Active in-scope rows, so a capped primer can say how many it left out. */
   total: number;
+  /** Corrupt stores moved aside. Non-empty means lessons are missing, not absent. */
+  quarantined: string[];
 }
 
-export const NO_LESSONS: RepoLessons = { lessons: [], flagged: 0, total: 0 };
+export const NO_LESSONS: RepoLessons = { lessons: [], flagged: 0, total: 0, quarantined: [] };
 
 function toContextLesson(r: LessonRow): ContextLesson {
   return {
@@ -357,7 +390,11 @@ const SCOPE_PREDICATE = `(
 export function readLessonsForRepo(container: string, remote: string, limit: number): RepoLessons {
   try {
     const db = getMemoryDb();
-    if (!db) return NO_LESSONS;
+    // Looked up after the open, because the open is what moves a corrupt file aside.
+    // An empty store and a store that was just quarantined are indistinguishable to a
+    // reader who is not told which one this is.
+    const quarantined = quarantinedStores();
+    if (!db) return { ...NO_LESSONS, quarantined };
 
     const rows = db
       .query<LessonRow, [string, string, number]>(
@@ -382,10 +419,10 @@ export function readLessonsForRepo(container: string, remote: string, limit: num
         )
         .get(container, remote)?.n ?? 0;
 
-    return { lessons: rows.map(toContextLesson), flagged, total };
+    return { lessons: rows.map(toContextLesson), flagged, total, quarantined };
   } catch {
     // The primer must never fail because of the lesson store.
-    return NO_LESSONS;
+    return { ...NO_LESSONS, quarantined: quarantinedStores() };
   }
 }
 
@@ -413,7 +450,8 @@ export interface RememberResult {
   provenance?: Provenance;
   verified?: boolean;
   reviewGroup?: number;
-  conflicts?: { id: number; lesson: string }[];
+  /** The rows this save implicates, with the status each ended up in. */
+  conflicts?: { id: number; lesson: string; status: LessonStatus }[];
   message: string;
 }
 
@@ -439,12 +477,43 @@ function statusNote(row: LessonRow): string {
   }
 }
 
+/** Nothing was inserted. `target` is a supersedes that therefore never ran, and is said out loud. */
+function knownResult(row: LessonRow, why: string, target: LessonRow | null): RememberResult {
+  const dropped = target ? ` The supersedes of #${target.id} was not applied — nothing was retired.` : '';
+  return {
+    outcome: 'known',
+    id: row.id,
+    status: row.status,
+    provenance: row.provenance,
+    verified: row.source_verified === 1,
+    message: `${why}${statusNote(row)}${dropped}`,
+  };
+}
+
+// Bun raises a SQLiteError whose code is the reliable part; the message is the fallback
+// for anything that arrives as a plain Error.
+function isUniqueViolation(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) return true;
+  return (e instanceof Error ? e.message : String(e)).includes('UNIQUE constraint failed');
+}
+
 function insertFts(db: Database, id: number, lesson: string, detail: string): void {
   db.run('DELETE FROM lessons_fts WHERE id = ?', [id]);
   db.run('INSERT INTO lessons_fts (id, lesson, detail) VALUES (?, ?, ?)', [id, lesson, detail]);
 }
 
-/** Active rows in the same scope bucket that share indexed tokens with `lesson`. */
+/**
+ * Rows in the same scope bucket that share indexed tokens with `lesson`.
+ *
+ * Every status but `superseded` is a candidate. Scanning only the active rows is how a
+ * rewording walks around a retirement, and how a third phrasing of a contested claim
+ * gets served as fact while its two rivals sit withheld in review. Superseded rows are
+ * the one exclusion: whatever replaced them is live and matches in their place.
+ *
+ * Ordered so the in-service rows come first — a same-statement match should be
+ * recognized as the row that is actually being served, not as a retired ancestor.
+ */
 function shortlist(db: Database, lesson: string, scope: Scope, container: string): LessonRow[] {
   const match = ftsQuery(lesson);
   if (!match) return [];
@@ -454,7 +523,8 @@ function shortlist(db: Database, lesson: string, scope: Scope, container: string
     return db
       .query<LessonRow, any[]>(
         `SELECT l.* FROM lessons_fts f JOIN lessons l ON l.id = f.id
-         WHERE lessons_fts MATCH ? AND l.status = 'active' AND ${bucket}`,
+         WHERE lessons_fts MATCH ? AND l.status <> 'superseded' AND ${bucket}
+         ORDER BY CASE l.status WHEN 'active' THEN 0 WHEN 'needs_review' THEN 1 ELSE 2 END, l.id`,
       )
       .all(...params);
   } catch {
@@ -503,33 +573,30 @@ export function rememberLesson(input: RememberInput): RememberResult {
   const repoKey = scope === 'global' ? '' : container;
   const hash = contentHash(lesson, scope, repoKey);
 
+  // Resolved first: a supersedes pointing at nothing is the actionable problem, and it
+  // must be refused before any other outcome buries it.
+  let target: LessonRow | null = null;
+  if (input.supersedes !== undefined) {
+    target = db.query<LessonRow, [number]>('SELECT * FROM lessons WHERE id = ?').get(input.supersedes);
+    if (!target) return reject(`no lesson #${input.supersedes} to supersede.`);
+    if (target.superseded_by !== null) {
+      return reject(`lesson #${input.supersedes} was already superseded by #${target.superseded_by}.`);
+    }
+  }
+
   // Exact re-save: the highest-volume junk source is the same agent saving the same
   // lesson every session. Bump the recurrence signal, insert nothing.
   const existing = db.query<LessonRow, [string]>('SELECT * FROM lessons WHERE content_hash = ?').get(hash);
   if (existing) {
     db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, existing.id]);
-    return {
-      outcome: 'known',
-      id: existing.id,
-      status: existing.status,
-      provenance: existing.provenance,
-      verified: existing.source_verified === 1,
-      message: `already known — lesson #${existing.id}, last seen bumped. Nothing inserted.${statusNote(existing)}`,
-    };
+    return knownResult(existing, `already known — lesson #${existing.id}, last seen bumped. Nothing inserted.`, target);
   }
 
-  // An explicit supersedes is a stated relationship, so it retires the incumbent
-  // before the near-duplicate scan runs and never lands in review.
-  let superseded: LessonRow | null = null;
-  if (input.supersedes !== undefined) {
-    superseded = db.query<LessonRow, [number]>('SELECT * FROM lessons WHERE id = ?').get(input.supersedes);
-    if (!superseded) return reject(`no lesson #${input.supersedes} to supersede.`);
-    if (superseded.superseded_by !== null) {
-      return reject(`lesson #${input.supersedes} was already superseded by #${superseded.superseded_by}.`);
-    }
-  }
-
-  const candidates = superseded ? [] : shortlist(db, lesson, scope, container);
+  // The near-duplicate scan runs on the supersedes path too. A stated relationship is
+  // not a checked one, and skipping the scan made `supersedes` an unreviewed kill
+  // switch: any id, hallucinated or off by one, retired a lesson outright. The target
+  // is held out of the scan because replacing it is the whole point.
+  const candidates = shortlist(db, lesson, scope, container).filter((r) => r.id !== target?.id);
   let same: LessonRow | null = null;
   const band: LessonRow[] = [];
   for (const row of candidates) {
@@ -547,21 +614,39 @@ export function rememberLesson(input: RememberInput): RememberResult {
   // Same lesson worded differently — treat it as a recurrence, not a new row.
   if (same) {
     db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, same.id]);
-    return {
-      outcome: 'known',
-      id: same.id,
-      status: same.status,
-      provenance: same.provenance,
-      verified: same.source_verified === 1,
-      message: `already known — lesson #${same.id} says the same thing ("${same.lesson}"). Last seen bumped, nothing inserted.${statusNote(same)}`,
-    };
+    return knownResult(
+      same,
+      `already known — lesson #${same.id} says the same thing ("${same.lesson}"). Last seen bumped, nothing inserted.`,
+      target,
+    );
   }
 
-  const conflict = band.length > 0;
+  // Two ways a row can be implicated. `contested` rows go out of service with the
+  // newcomer and are what the review decides between; `context` rows are shown beside
+  // the group and left exactly as they are — a retirement and a mis-aimed supersedes
+  // are both decisions this save has no standing to overturn on its own.
+  const contested = band.filter((r) => r.status !== 'retired');
+  const context = band.filter((r) => r.status === 'retired');
+  let misaimed: LessonRow | null = null;
+  let supersedeNow = false;
+  if (target) {
+    if (jaccard(lesson, target.lesson) < REVIEW_JACCARD) {
+      misaimed = target;
+      context.push(target);
+    } else if (contested.length > 0 || context.length > 0) {
+      // Related, but contested by something else too — one decision, not two, and the
+      // supersession waits for it rather than emptying the shelf in the meantime.
+      contested.push(target);
+    } else {
+      supersedeNow = true;
+    }
+  }
+
+  const conflict = contested.length > 0 || context.length > 0;
   const status: LessonStatus = conflict ? 'needs_review' : 'active';
   const src = input.source;
 
-  const id = db.transaction(() => {
+  const insert = db.transaction(() => {
     db.run(
       `INSERT INTO lessons (content_hash, lesson, detail, scope, repo_container, repo_remote, files, tool,
                             source_session, source_transcript, source_tool_use_id, provenance, source_verified,
@@ -582,7 +667,7 @@ export function rememberLesson(input: RememberInput): RememberResult {
         src.provenance,
         src.verified ? 1 : 0,
         status,
-        superseded?.id ?? null,
+        supersedeNow ? target!.id : null,
         now,
         now,
       ],
@@ -590,38 +675,92 @@ export function rememberLesson(input: RememberInput): RememberResult {
     const newId = db.query<{ id: number }, []>('SELECT last_insert_rowid() AS id').get()!.id;
     insertFts(db, newId, lesson, detail);
 
-    if (superseded) {
-      db.run("UPDATE lessons SET status = 'superseded', superseded_by = ? WHERE id = ?", [newId, superseded.id]);
+    if (supersedeNow) {
+      db.run("UPDATE lessons SET status = 'superseded', superseded_by = ? WHERE id = ?", [newId, target!.id]);
     }
+
+    let group = newId;
     if (conflict) {
-      // Flag BOTH rows. Quarantining only the newcomer would keep serving the
+      // Join the group the contested rows already sit in instead of opening a rival
+      // one. A third phrasing of the same argument is one decision; two groups would
+      // let the human resolve half of it and put the other half back into service.
+      const open = [...new Set(contested.map((r) => r.review_group).filter((g): g is number => g !== null))];
+      if (open.length > 0) {
+        group = Math.min(...open);
+        for (const g of open) {
+          if (g !== group) db.run('UPDATE lessons SET review_group = ? WHERE review_group = ?', [group, g]);
+        }
+      }
+      // Flag BOTH sides. Quarantining only the newcomer would keep serving the
       // possibly-stale incumbent as fact while the correction sits invisible —
       // the exact inversion of what a conflict should do.
-      db.run('UPDATE lessons SET status = ?, review_group = ? WHERE id = ?', ['needs_review', newId, newId]);
-      for (const row of band) {
-        db.run('UPDATE lessons SET status = ?, review_group = ? WHERE id = ?', ['needs_review', newId, row.id]);
+      db.run("UPDATE lessons SET status = 'needs_review', review_group = ? WHERE id = ?", [group, newId]);
+      for (const row of contested) {
+        db.run("UPDATE lessons SET status = 'needs_review', review_group = ? WHERE id = ?", [group, row.id]);
+      }
+      // Context rows keep any group they are already in: a row that is itself pending
+      // belongs to the argument it was flagged for, and moving it here would split that
+      // group and hand this decision a row that is not about this claim.
+      for (const row of context) {
+        if (row.review_group === null) db.run('UPDATE lessons SET review_group = ? WHERE id = ?', [group, row.id]);
       }
     }
-    return newId;
-  })();
+    return { id: newId, group };
+  });
+
+  let id: number;
+  let group: number;
+  try {
+    ({ id, group } = insert());
+  } catch (e) {
+    // Two sessions saving the same lesson at once: the SELECT above missed and the
+    // UNIQUE index caught it. The row the other writer landed is the answer, so this
+    // is the known path arriving the hard way — not an error for the agent to see.
+    if (!isUniqueViolation(e)) throw e;
+    const raced = db.query<LessonRow, [string]>('SELECT * FROM lessons WHERE content_hash = ?').get(hash);
+    if (!raced) throw e;
+    db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, raced.id]);
+    return knownResult(
+      raced,
+      `already known — lesson #${raced.id} was saved concurrently by another session. Nothing inserted.`,
+      target,
+    );
+  }
 
   if (conflict) {
+    const quote = (r: LessonRow) => `#${r.id} "${r.lesson}"`;
+    const overlaps = [
+      ...contested.map((r) => `${quote(r)} (now also flagged)`),
+      ...context.filter((r) => r.id !== misaimed?.id).map((r) => `${quote(r)} (retired, left as it is)`),
+    ];
+    const bits: string[] = [];
+    if (overlaps.length > 0) {
+      bits.push(
+        `it overlaps ${overlaps.length === 1 ? 'an existing lesson' : `${overlaps.length} existing lessons`}: ${overlaps.join('; ')}`,
+      );
+    }
+    if (misaimed) {
+      bits.push(`it claims to supersede ${quote(misaimed)}, which says nothing the same — so nothing was retired`);
+    }
     return {
       outcome: 'conflict',
       id,
       status: 'needs_review',
       provenance: src.provenance,
       verified: src.verified,
-      reviewGroup: id,
-      conflicts: band.map((r) => ({ id: r.id, lesson: r.lesson })),
+      reviewGroup: group,
+      conflicts: [
+        ...contested.map((r) => ({ id: r.id, lesson: r.lesson, status: 'needs_review' as LessonStatus })),
+        ...context.map((r) => ({ id: r.id, lesson: r.lesson, status: r.status })),
+      ],
       message:
-        `saved #${id} as needs_review — it overlaps ${band.length === 1 ? 'an existing lesson' : `${band.length} existing lessons`}, ` +
-        `now also flagged: ${band.map((r) => `#${r.id} "${r.lesson}"`).join('; ')}. ` +
-        'Neither is served in the primer until a human picks. Raise the conflict with the user, or run `sessions lessons review`.',
+        `saved #${id} as needs_review — ${bits.join(', and ')}. ` +
+        'Nothing in the group is served in the primer until a human picks. ' +
+        'Raise the conflict with the user, or run `sessions lessons review`.',
     };
   }
 
-  const note = superseded ? ` It supersedes #${superseded.id}.` : '';
+  const note = supersedeNow ? ` It supersedes #${target!.id}.` : '';
   return {
     outcome: 'saved',
     id,
@@ -676,9 +815,14 @@ export interface ReviewGroup {
 export function reviewGroups(): ReviewGroup[] {
   const db = getMemoryDb();
   if (!db) return [];
+  // Every row in a group that has something pending, including the ones that are only
+  // there as context — a retired lesson the newcomer overlaps, or a supersedes target
+  // it does not match. They explain the conflict; they are never re-decided by it.
   const rows = db
     .query<LessonRow, []>(
-      "SELECT * FROM lessons WHERE status = 'needs_review' AND review_group IS NOT NULL ORDER BY review_group, id",
+      `SELECT * FROM lessons WHERE review_group IN
+         (SELECT review_group FROM lessons WHERE status = 'needs_review' AND review_group IS NOT NULL)
+       ORDER BY review_group, id`,
     )
     .all();
   const groups = new Map<number, LessonRow[]>();
@@ -700,16 +844,20 @@ export type ReviewChoice = 'new' | 'old' | 'both';
 export function resolveReview(group: number, choice: ReviewChoice, now = new Date().toISOString()): number {
   const db = getMemoryDb();
   if (!db || _readonly) return 0;
-  const rows = db
-    .query<LessonRow, [number]>("SELECT * FROM lessons WHERE review_group = ? AND status = 'needs_review' ORDER BY id")
-    .all(group);
+  const all = db.query<LessonRow, [number]>('SELECT * FROM lessons WHERE review_group = ? ORDER BY id').all(group);
+  const rows = all.filter((r) => r.status === 'needs_review');
   if (rows.length === 0) return 0;
 
-  // The group key is the newcomer's own id, so it is the last row by id.
+  // The newcomer is whichever pending row is newest, so it is the last one by id —
+  // the group key itself may be older than that once two groups have merged.
   const winner = rows[rows.length - 1]!;
   const losers = rows.slice(0, -1);
 
   db.transaction(() => {
+    // Context rows were never in the decision; they only lose their group marker.
+    for (const r of all) {
+      if (r.status !== 'needs_review') db.run('UPDATE lessons SET review_group = NULL WHERE id = ?', [r.id]);
+    }
     if (choice === 'both') {
       for (const r of rows) db.run("UPDATE lessons SET status = 'active', review_group = NULL WHERE id = ?", [r.id]);
       return;
@@ -724,8 +872,10 @@ export function resolveReview(group: number, choice: ReviewChoice, now = new Dat
           winner.id,
           r.id,
         ]);
-        db.run('UPDATE lessons SET supersedes_id = ? WHERE id = ?', [r.id, winner.id]);
       }
+      // One column, possibly several losers: point it at the oldest so the chain leads
+      // back to the original claim. Writing it per loser kept only the last one.
+      if (losers[0]) db.run('UPDATE lessons SET supersedes_id = ? WHERE id = ?', [losers[0].id, winner.id]);
       return;
     }
     // keep-old: the newcomer is retired, the incumbents go back to active.

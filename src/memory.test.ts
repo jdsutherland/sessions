@@ -279,7 +279,7 @@ describe('near-duplicates flag both rows', () => {
     const second = save(B);
 
     expect(second.outcome).toBe('conflict');
-    expect(second.conflicts).toEqual([{ id: first.id!, lesson: A }]);
+    expect(second.conflicts).toEqual([{ id: first.id!, lesson: A, status: 'needs_review' }]);
 
     const rows = mem.listLessons({ container: REPO, remote: REMOTE });
     expect(rows.map((r) => r.status)).toEqual(['needs_review', 'needs_review']);
@@ -316,7 +316,7 @@ describe('near-duplicates flag both rows', () => {
 
     expect(reversed.outcome).toBe('conflict');
     expect(reversed.conflicts).toEqual([
-      { id: first.id!, lesson: 'The retry budget is per-endpoint, not per-account.' },
+      { id: first.id!, lesson: 'The retry budget is per-endpoint, not per-account.', status: 'needs_review' },
     ]);
     expect(mem.countLessons()).toBe(2);
     expect(mem.readLessonsForRepo(REPO, REMOTE, 5).flagged).toBe(2);
@@ -327,6 +327,109 @@ describe('near-duplicates flag both rows', () => {
     const other = save(B, { container: '/repo/beta', remote: '' });
     expect(other.outcome).toBe('saved');
     expect(other.status).toBe('active');
+  });
+});
+
+/**
+ * The reword-and-resave loop. The tool description forbids it, and until the shortlist
+ * looked past `active` rows nothing enforced it: a third phrasing of a contested claim
+ * was served as fact directly above the line saying two lessons were withheld.
+ */
+describe('a rewording cannot walk around the review', () => {
+  const A = 'The lesson store lives outside the cache directory.';
+  const B = 'The lesson store lives inside the cache directory.';
+  const C = 'The lesson store lives within the cache directory tree.';
+
+  test('a third phrasing joins the pending group instead of going live', () => {
+    const first = save(A);
+    const second = save(B);
+    const third = save(C);
+
+    expect(third.outcome).toBe('conflict');
+    expect(third.status).toBe('needs_review');
+    expect(third.reviewGroup).toBe(second.reviewGroup!);
+
+    const groups = mem.reviewGroups();
+    expect(groups.length).toBe(1);
+    expect(groups[0]!.rows.map((r) => r.id)).toEqual([first.id!, second.id!, third.id!]);
+
+    const read = mem.readLessonsForRepo(REPO, REMOTE, 5);
+    expect(read.lessons).toEqual([]);
+    expect(read.flagged).toBe(3);
+  });
+
+  test('one resolution decides every phrasing, because they are one group', () => {
+    save(A);
+    save(B);
+    const third = save(C);
+    expect(mem.resolveReview(third.reviewGroup!, 'new')).toBe(3);
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons.map((l) => l.lesson)).toEqual([C]);
+  });
+
+  test('two pending groups merge when one lesson overlaps both', () => {
+    // Constructed to sit either side of the band: the two pairs are 0.429 apart, so
+    // they open separate groups, and the newcomer is 0.667 from all four. Leaving the
+    // groups apart would let a human resolve one and put its rivals back into service
+    // while the same argument is still open in the other.
+    const a1 = save('The primer budget caps lessons and headlines.');
+    const a2 = save('The primer budget caps lessons and files.');
+    const b1 = save('The primer budget caps commands and errors.');
+    const b2 = save('The primer budget caps commands and thinking.');
+    expect(mem.reviewGroups().length).toBe(2);
+
+    const bridge = save('The primer budget caps lessons and commands.');
+    expect(bridge.outcome).toBe('conflict');
+
+    const groups = mem.reviewGroups();
+    expect(groups.length).toBe(1);
+    expect(groups[0]!.rows.map((r) => r.id)).toEqual([a1.id!, a2.id!, b1.id!, b2.id!, bridge.id!]);
+  });
+});
+
+/**
+ * Retirement is a human decision. The content hash catches an exact re-save, but only
+ * a shortlist that sees retired rows catches the rewording that walks around it.
+ */
+describe('a retirement cannot be paraphrased around', () => {
+  const OUT = 'The lesson store lives outside the cache directory.';
+
+  test('a reworded retired lesson is recognized, not re-admitted as a fresh row', () => {
+    const saved = save('stdio MCP servers need an explicit exit on stdin end or close');
+    mem.retireLesson(saved.id!);
+
+    const again = save('stdio MCP servers need explicit exit on stdin end/close');
+    expect(again.outcome).toBe('known');
+    expect(again.id).toBe(saved.id!);
+    expect(again.status).toBe('retired');
+    expect(again.message).toContain('was retired and is not served');
+    expect(mem.countLessons()).toBe(1);
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons).toEqual([]);
+  });
+
+  test('an overlapping claim is withheld, and the retired row is left exactly as it is', () => {
+    const saved = save(OUT);
+    mem.retireLesson(saved.id!);
+
+    const res = save('The lesson store lives inside the cache directory.');
+    expect(res.outcome).toBe('conflict');
+    expect(res.conflicts).toEqual([{ id: saved.id!, lesson: OUT, status: 'retired' }]);
+    expect(mem.listLessons({ all: true }).find((r) => r.id === saved.id)!.status).toBe('retired');
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons).toEqual([]);
+  });
+
+  test('the retired row rides the review as context and is never revived by it', () => {
+    const saved = save(OUT);
+    mem.retireLesson(saved.id!);
+    const res = save('The lesson store lives inside the cache directory.');
+
+    expect(mem.reviewGroups()[0]!.rows.map((r) => r.status)).toEqual(['retired', 'needs_review']);
+
+    // Only the pending row is decided; the retirement is not up for a vote.
+    expect(mem.resolveReview(res.reviewGroup!, 'new')).toBe(1);
+    const row = mem.listLessons({ all: true }).find((r) => r.id === saved.id)!;
+    expect(row.status).toBe('retired');
+    expect(row.review_group).toBeNull();
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons.map((l) => l.id)).toEqual([res.id!]);
   });
 });
 
@@ -371,6 +474,117 @@ describe('review resolution', () => {
     expect(mem.reviewGroups().map((g) => g.rows.length)).toEqual([2]);
     mem.resolveReview(second.reviewGroup!, 'both');
     expect(mem.reviewGroups()).toEqual([]);
+  });
+
+  test('keep-new with several losers records the oldest as its lineage, not the last', () => {
+    const first = save('The lesson store lives outside the cache directory.');
+    const second = save('The lesson store lives inside the cache directory.');
+    const third = save('The lesson store lives within the cache directory tree.');
+    mem.resolveReview(third.reviewGroup!, 'new');
+
+    const rows = mem.listLessons({ all: true });
+    // One column, three rows: it points at the original claim, and every loser still
+    // names the winner, so no row in the chain is unreachable.
+    expect(rows.find((r) => r.id === third.id)!.supersedes_id).toBe(first.id!);
+    expect(rows.find((r) => r.id === first.id)!.superseded_by).toBe(third.id!);
+    expect(rows.find((r) => r.id === second.id)!.superseded_by).toBe(third.id!);
+  });
+});
+
+/**
+ * Two agent windows closing on the same finding at the same second. The hash SELECT
+ * and the INSERT are not one atomic step, so the losers used to die on the UNIQUE
+ * index and hand the agent a raw SQLITE_CONSTRAINT instead of "already known".
+ *
+ * Real processes, not a simulated race: the bug needs two separate SQLite connections,
+ * each of which genuinely missed the other's row before writing.
+ */
+describe('concurrent writers', () => {
+  const WRITER = join(import.meta.dir, '__fixtures__', 'concurrent-remember.ts');
+  const LESSON = 'Two sessions can reach the same conclusion in the same second.';
+
+  test('ten processes saving one lesson land one row, and none of them crash', async () => {
+    // The store already exists, so what races is only the save: the content_hash miss
+    // followed by the INSERT that meets the UNIQUE index the other writer just filled.
+    save('An unrelated lesson that creates the store first.');
+    mem.closeMemoryDb();
+
+    const gate = join(fixtureRoot, 'go');
+    const procs = Array.from({ length: 10 }, () =>
+      Bun.spawn([process.execPath, 'run', WRITER, LESSON, gate], {
+        env: { ...process.env, SESSIONS_MEMORY_DB: dbPath },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      }),
+    );
+    // Every process is up and spinning on the gate before any of them may write.
+    await Bun.sleep(300);
+    writeFileSync(gate, '');
+
+    const results = await Promise.all(
+      procs.map(async (p) => ({
+        code: await p.exited,
+        out: await new Response(p.stdout).text(),
+        err: await new Response(p.stderr).text(),
+      })),
+    );
+
+    for (const r of results) expect({ code: r.code, err: r.err }).toEqual({ code: 0, err: '' });
+
+    const outcomes = results.map((r) => JSON.parse(r.out).outcome);
+    expect(outcomes.filter((o) => o === 'saved').length).toBe(1);
+    expect(outcomes.filter((o) => o === 'known').length).toBe(9);
+
+    mem.closeMemoryDb(); // the writes belong to the children; reopen the file
+    expect(mem.countLessons()).toBe(2);
+    expect(mem.listLessons({ all: true }).filter((r) => r.lesson === LESSON).length).toBe(1);
+  });
+});
+
+/**
+ * Corruption is the one failure that must not be quiet. The bytes are kept — but a
+ * rename nobody mentions reads exactly like "you never saved anything", and a read
+ * that then creates a fresh file starts a second store the first one can never merge
+ * back into.
+ */
+describe('a corrupt store is loud, and a read never replaces it', () => {
+  const GARBAGE = 'this is not a sqlite database at all';
+
+  function corruptFiles(): string[] {
+    return readdirSync(fixtureRoot).filter((f) => f.includes('.corrupt-'));
+  }
+
+  test('a read sets the bytes aside and conjures nothing in their place', () => {
+    writeFileSync(dbPath, GARBAGE);
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons).toEqual([]);
+
+    expect(existsSync(dbPath)).toBe(false);
+    expect(corruptFiles().length).toBe(1);
+    expect(readFileSync(join(fixtureRoot, corruptFiles()[0]!), 'utf-8')).toBe(GARBAGE);
+  });
+
+  test('the read says what happened instead of reporting an empty store', () => {
+    writeFileSync(dbPath, GARBAGE);
+    const read = mem.readLessonsForRepo(REPO, REMOTE, 5);
+    expect(read.quarantined.length).toBe(1);
+    expect(read.quarantined[0]).toContain('memory.db.corrupt-');
+  });
+
+  test('the notice outlives the process that made it, and the store that replaced it', () => {
+    writeFileSync(dbPath, GARBAGE);
+    expect(save('A lesson written after the corruption.').outcome).toBe('saved');
+    mem.closeMemoryDb();
+
+    const read = mem.readLessonsForRepo(REPO, REMOTE, 5);
+    expect(read.lessons.length).toBe(1);
+    // Read off the directory, not off a flag in memory: the divergence between the two
+    // files has no merge path, so it is reported until one of them is dealt with.
+    expect(read.quarantined.length).toBe(1);
+  });
+
+  test('a healthy store reports no quarantine', () => {
+    save('An ordinary lesson in an ordinary store.');
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).quarantined).toEqual([]);
   });
 });
 
@@ -423,6 +637,93 @@ describe('explicit supersession', () => {
     const first = save('The lesson store lives outside the cache directory.');
     save('The lesson store lives inside the cache directory.', { supersedes: first.id });
     expect(save('A third position entirely.', { supersedes: first.id }).outcome).toBe('rejected');
+  });
+});
+
+/**
+ * A stated relationship is not a checked one. Skipping the scan made `supersedes` a
+ * kill switch nobody reviewed: any id, hallucinated or off by one, took a lesson out
+ * of service, and the default listing did not show that it had happened.
+ */
+describe('supersedes is checked, not obeyed', () => {
+  const STORE = 'The lesson store lives outside the cache directory.';
+  const UNRELATED = 'Worktrees collapse to one container key, so a branch lesson applies on main.';
+
+  test('an id naming something unrelated retires nothing and goes to review', () => {
+    const first = save(STORE);
+    const res = save(UNRELATED, { supersedes: first.id });
+
+    expect(res.outcome).toBe('conflict');
+    expect(res.status).toBe('needs_review');
+    expect(res.message).toContain('nothing was retired');
+    expect(res.conflicts).toEqual([{ id: first.id!, lesson: STORE, status: 'active' }]);
+
+    const rows = mem.listLessons({ all: true });
+    expect(rows.find((r) => r.id === first.id)!.status).toBe('active');
+    expect(rows.find((r) => r.id === res.id)!.supersedes_id).toBeNull();
+    // Only the unchecked claim is withheld — the lesson it aimed at is still served.
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 5).lessons.map((l) => l.id)).toEqual([first.id!]);
+  });
+
+  test('resolving that review leaves the mis-named target alone either way', () => {
+    const first = save(STORE);
+    const res = save(UNRELATED, { supersedes: first.id });
+    expect(mem.resolveReview(res.reviewGroup!, 'new')).toBe(1);
+
+    const rows = mem.listLessons({ all: true });
+    expect(rows.find((r) => r.id === first.id)!.status).toBe('active');
+    expect(rows.find((r) => r.id === first.id)!.review_group).toBeNull();
+    expect(rows.find((r) => r.id === res.id)!.status).toBe('active');
+  });
+
+  test('a correction that also contests a third lesson waits for the human', () => {
+    const first = save('Index rebuilds are triggered by a SCHEMA_VERSION bump.');
+    const third = save('Index rebuilds are triggered by an mtime change.');
+    expect(third.outcome).toBe('saved');
+
+    const res = save('Index rebuilds are triggered by a SCHEMA_VERSION bump or an mtime change.', {
+      supersedes: first.id,
+    });
+    expect(res.outcome).toBe('conflict');
+
+    // Nothing is retired ahead of the decision: superseding the target while the
+    // replacement is itself withheld would empty the shelf and serve nothing.
+    const rows = mem.listLessons({ all: true });
+    expect(rows.length).toBe(3);
+    expect(rows.every((r) => r.status === 'needs_review')).toBe(true);
+    expect(rows.find((r) => r.id === first.id)!.superseded_by).toBeNull();
+
+    // Keeping the correction is what finally performs the supersession.
+    expect(mem.resolveReview(res.reviewGroup!, 'new')).toBe(3);
+    const after = mem.listLessons({ all: true });
+    expect(after.find((r) => r.id === first.id)!.superseded_by).toBe(res.id!);
+    expect(after.find((r) => r.id === third.id)!.superseded_by).toBe(res.id!);
+  });
+
+  test('a mis-aimed id does not drag its target out of the review it is already in', () => {
+    const a = save('The lesson store lives outside the cache directory.');
+    const b = save('The lesson store lives inside the cache directory.');
+    expect(b.outcome).toBe('conflict');
+
+    // #a is pending in its own argument. Naming it here must not move it into this one.
+    const res = save('Timezone bucketing happens once, in the report pipeline.', { supersedes: a.id });
+    expect(res.outcome).toBe('conflict');
+
+    const groups = mem.reviewGroups();
+    expect(groups.length).toBe(2);
+    expect(groups.find((g) => g.group === b.reviewGroup)!.rows.map((r) => r.id)).toEqual([a.id!, b.id!]);
+    expect(groups.find((g) => g.group === res.reviewGroup)!.rows.map((r) => r.id)).toEqual([res.id!]);
+  });
+
+  test('a supersedes dropped by an already-known lesson is said out loud', () => {
+    const first = save(STORE);
+    const other = save('Timezone bucketing happens once, in the report pipeline.');
+    const again = save('Timezone bucketing happens once, in the report pipeline.', { supersedes: first.id });
+
+    expect(again.outcome).toBe('known');
+    expect(again.id).toBe(other.id!);
+    expect(again.message).toContain(`The supersedes of #${first.id} was not applied`);
+    expect(mem.listLessons({ all: true }).find((r) => r.id === first.id)!.status).toBe('active');
   });
 });
 
