@@ -83,9 +83,21 @@ export interface TrajectoryOmissions {
   orphanToolResult: number;
 }
 
+/**
+ * A role trajectory-v1 requires at least one of. The schema does not say so — this is the
+ * reference validator's semantic layer (validateTranscript: "Transcript must contain at
+ * least one user record") — and every record can satisfy the schema while the document
+ * still fails it. Both cases are ordinary, not corrupt: a Claude session driven entirely
+ * by the harness (a subagent journal, a review run) has no genuine user turn to project,
+ * and a Codex rollout abandoned before the model replied has no assistant turn at all.
+ */
+export type RequiredRole = 'user' | 'assistant';
+
 export interface TrajectoryExport {
   records: TrajectoryRecord[];
   omissions: TrajectoryOmissions;
+  /** Required roles this document has none of. Non-empty means no consumer can read it. */
+  missing: RequiredRole[];
 }
 
 /**
@@ -174,7 +186,12 @@ export function toTrajectory(lines: string[], tool: Tool): TrajectoryExport {
       }
     }
   }
-  return { records, omissions };
+
+  // Checked over what was emitted, not over what the log held: dropping every injected user
+  // turn is what leaves a harness-only session with no user record.
+  const roles = new Set(records.map((r) => r.role));
+  const missing = (['user', 'assistant'] as const).filter((role) => !roles.has(role));
+  return { records, omissions, missing };
 }
 
 /** trajectory-v1 wants the arguments as a string; the record holds them parsed. */
@@ -221,6 +238,11 @@ speaking), records the log gave no timestamp, and tool results with no call to
 join back to. Reasoning appears only where the harness wrote text — Claude
 keeps the signature and discards the thinking, so its trajectories carry none.
 
+A whole session is skipped when the projection leaves it without a user record
+or without an assistant record — a trajectory-v1 document needs both, so a
+harness-only run (every user turn injected) or a rollout with no reply has
+nothing a reader could consume.
+
 Usage:
   sessions export <file-path>            Export one session JSONL file
   sessions export <session-id>           Resolve an indexed session id
@@ -232,9 +254,10 @@ Options:
   --tool <name>    With --query: claude, codex, pi, opencode
   --here           With --query: scope to the current git repo
   --limit <n>      With --query: how many sessions to export (default 10)
-  --strict         Exit non-zero if any record was dropped for a missing
-                   timestamp or an unjoinable tool result (injected turns are
-                   a projection choice, not a gap, and never fail --strict)
+  --strict         Exit non-zero if a session was skipped, or if any record was
+                   dropped for a missing timestamp or an unjoinable tool result
+                   (injected turns are a projection choice, not a gap, and
+                   never fail --strict on their own)
   -h, --help       Show this help
 `);
   process.exit(0);
@@ -296,6 +319,61 @@ async function resolveTarget(target: string): Promise<string> {
   return resolved;
 }
 
+/** A selection, projected: the documents to write, what they dropped, and what could not
+ *  become a document at all. Separated from runExport so the skipping is testable without
+ *  a process, an index, or a ranked query. */
+export interface ExportBatch {
+  /** One serialized trajectory-v1 document per exportable session. */
+  documents: string[];
+  omissions: TrajectoryOmissions;
+  /** Sessions left out because trajectory-v1 has no valid document for them. */
+  skipped: number;
+  /** Why, tallied by reason rather than by session — one session can be missing both. */
+  noRole: Record<RequiredRole, number>;
+  /** Selected paths that read back as nothing. */
+  unreadable: string[];
+}
+
+export function projectSessions(paths: string[]): ExportBatch {
+  const batch: ExportBatch = {
+    documents: [],
+    omissions: { injectedUser: 0, noTimestamp: 0, orphanToolResult: 0 },
+    skipped: 0,
+    noRole: { user: 0, assistant: 0 },
+    unreadable: [],
+  };
+  for (const path of paths) {
+    const lines = readSessionLines(path);
+    if (lines.length === 0) {
+      batch.unreadable.push(path);
+      continue;
+    }
+    const { records, omissions, missing } = toTrajectory(lines, toolForSession(path, lines));
+    // A document the reference validator rejects is not an export. Its own omissions go
+    // uncounted with it: nothing of this session reached the output for them to describe.
+    if (missing.length > 0) {
+      for (const role of missing) batch.noRole[role]++;
+      batch.skipped++;
+      continue;
+    }
+    batch.omissions.injectedUser += omissions.injectedUser;
+    batch.omissions.noTimestamp += omissions.noTimestamp;
+    batch.omissions.orphanToolResult += omissions.orphanToolResult;
+    batch.documents.push(JSON.stringify(records));
+  }
+  return batch;
+}
+
+/** `2 with no user record, 1 with no assistant record` — the reasons, in a fixed order. */
+function skipReasons(noRole: Record<RequiredRole, number>): string {
+  return [
+    noRole.user && `${noRole.user} with no user record`,
+    noRole.assistant && `${noRole.assistant} with no assistant record`,
+  ]
+    .filter((s): s is string => typeof s === 'string')
+    .join(', ');
+}
+
 export async function runExport(args: ExportArgs): Promise<void> {
   const paths = args.query
     ? (
@@ -307,32 +385,30 @@ export async function runExport(args: ExportArgs): Promise<void> {
       ).map((r) => r.filePath)
     : [await resolveTarget(args.target)];
 
-  const total: TrajectoryOmissions = { injectedUser: 0, noTimestamp: 0, orphanToolResult: 0 };
-  const out: string[] = [];
-  for (const path of paths) {
-    const lines = readSessionLines(path);
-    if (lines.length === 0) {
-      process.stderr.write(`warning: could not read ${path}\n`);
-      continue;
-    }
-    const { records, omissions } = toTrajectory(lines, toolForSession(path, lines));
-    total.injectedUser += omissions.injectedUser;
-    total.noTimestamp += omissions.noTimestamp;
-    total.orphanToolResult += omissions.orphanToolResult;
-    out.push(JSON.stringify(records));
-  }
+  const { documents, omissions, skipped, noRole, unreadable } = projectSessions(paths);
+  for (const path of unreadable) process.stderr.write(`warning: could not read ${path}\n`);
 
-  if (out.length === 0) die('no sessions to export');
-  await writeStdoutFully(out.join('\n') + '\n');
+  if (documents.length === 0) {
+    die(skipped > 0 ? `no exportable sessions — ${skipReasons(noRole)}` : 'no sessions to export');
+  }
+  await writeStdoutFully(documents.join('\n') + '\n');
 
   const dropped = [
-    total.injectedUser && `${total.injectedUser} injected user turn(s)`,
-    total.noTimestamp && `${total.noTimestamp} record(s) with no timestamp`,
-    total.orphanToolResult && `${total.orphanToolResult} unjoinable tool result(s)`,
+    omissions.injectedUser && `${omissions.injectedUser} injected user turn(s)`,
+    omissions.noTimestamp && `${omissions.noTimestamp} record(s) with no timestamp`,
+    omissions.orphanToolResult && `${omissions.orphanToolResult} unjoinable tool result(s)`,
   ].filter((s): s is string => typeof s === 'string');
-  process.stderr.write(`exported ${out.length} session(s)${dropped.length ? `; omitted ${dropped.join(', ')}` : ''}\n`);
+  process.stderr.write(
+    `exported ${documents.length} session(s)` +
+      (skipped ? `; skipped ${skipped} unrepresentable (${skipReasons(noRole)})` : '') +
+      (dropped.length ? `; omitted ${dropped.join(', ')}` : '') +
+      '\n',
+  );
 
-  if (args.strict && total.noTimestamp + total.orphanToolResult > 0) {
-    die('--strict: the projection dropped records trajectory-v1 cannot represent');
+  if (args.strict) {
+    if (skipped > 0) die(`--strict: ${skipped} session(s) cannot be a trajectory-v1 document`);
+    if (omissions.noTimestamp + omissions.orphanToolResult > 0) {
+      die('--strict: the projection dropped records trajectory-v1 cannot represent');
+    }
   }
 }

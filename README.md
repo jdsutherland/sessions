@@ -320,7 +320,9 @@ The session record sessions keeps is a superset of trajectory-v1, so the export 
 
 Empty reasoning is not emitted at all: Claude keeps the thinking signature and discards the text on 99.92% of its records, so its trajectories carry no `reasoning`. Codex and Pi carry theirs. Structured tool arguments are serialized to the JSON string the schema requires, and a call the harness left unidentified (Codex `web_search_call`) gets a synthetic id — nothing joins to it.
 
-Pass `--strict` to exit non-zero instead of dropping a record for a missing timestamp or an unjoinable result. Injected turns are a projection choice rather than a gap, and never fail `--strict`.
+A trajectory-v1 document also has to contain at least one user record and at least one assistant record — a requirement of the format, not of its JSON schema, so a document can satisfy every per-record rule and still be rejected. Sessions that project to one are skipped and counted on stderr: a Claude run driven entirely by the harness (a subagent journal, a review pass) has no genuine user turn left once injections are dropped, and a Codex rollout abandoned before the model replied has no assistant turn at all.
+
+Pass `--strict` to exit non-zero instead: on a skipped session, or on a record dropped for a missing timestamp or an unjoinable result. Injected turns are a projection choice rather than a gap, and never fail `--strict` on their own.
 
 ## Usage reports
 

@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { parseSession } from './record';
-import { toTrajectory, parseExportArgs } from './trajectory';
+import { toTrajectory, parseExportArgs, projectSessions, type RequiredRole } from './trajectory';
 import type { Tool } from './types';
 
 const CAPTURED = join(import.meta.dir, '__fixtures__');
@@ -98,6 +99,89 @@ describe('the projection satisfies trajectory-v1', () => {
       expect(records.length).toBeGreaterThan(1);
     });
   }
+});
+
+/**
+ * The validator's semantic layer, which the per-record schema does not cover: a document
+ * with no user record or no assistant record is rejected however clean its records are.
+ * The fixtures are captured from real transcripts (scripts/capture-fixture.ts) rather than
+ * authored, because an authored one would only restate what this code already believes.
+ * `claude-harness-only` is a security-review subagent whose one user turn is the harness's
+ * prompt; `codex-no-assistant` is a rollout the model never answered.
+ */
+describe('a session that cannot be a trajectory-v1 document', () => {
+  const harnessOnly = join(CAPTURED, 'unrepresentable/claude-harness-only.jsonl');
+  const noAssistant = join(CAPTURED, 'unrepresentable/codex-no-assistant.jsonl');
+  // Captured before this check existed, and it fails too: a Codex turn aborted mid-flight,
+  // whose only user-role lines are <user_action> and <turn_aborted> injections.
+  const aborted = join(CAPTURED, 'codex/rollout-2026-05-08T12-49-51-019e0923-a5ed-7ae3-bb08-75d11d711353.jsonl');
+
+  for (const [path, tool, missing] of [
+    [harnessOnly, 'claude', ['user']],
+    [aborted, 'codex', ['user']],
+    [noAssistant, 'codex', ['assistant']],
+  ] as [string, Tool, RequiredRole[]][]) {
+    test(`${path.split('/').pop()} is missing ${missing.join(' and ')}`, () => {
+      const { records, missing: actual } = toTrajectory(read(path), tool);
+      expect(actual).toEqual(missing);
+      // The records themselves are fine — that is the whole point. It is the document no
+      // reader will take, and only a document-level check can see it.
+      expect(violations(records)).toEqual([]);
+      expect(records.length).toBeGreaterThan(1);
+    });
+  }
+
+  test('the harness-only session had a user turn; it was injected, and dropping it is what empties the document', () => {
+    const lines = read(harnessOnly);
+    const { records, omissions } = toTrajectory(lines, 'claude');
+    expect(omissions.injectedUser).toBe(1);
+    expect(parseSession(lines, 'claude').filter((r) => r.role === 'user' && r.genuine).length).toBe(0);
+    expect(records.filter((r) => r.role === 'assistant').length).toBeGreaterThan(0);
+  });
+
+  test('a selection keeps what it can and counts what it dropped', () => {
+    const good = transcripts(join(CAPTURED, 'claude'))[0]!;
+    const batch = projectSessions([good, harnessOnly, noAssistant]);
+    expect(batch.documents.length).toBe(1);
+    expect(batch.skipped).toBe(2);
+    expect(batch.noRole).toEqual({ user: 1, assistant: 1 });
+    // A skipped session takes its own omissions with it — nothing of it was exported.
+    expect(batch.omissions.injectedUser).toBe(toTrajectory(read(good), 'claude').omissions.injectedUser);
+  });
+
+  // Through the CLI, because the exit code is the contract a caller scripts against.
+  describe('sessions export', () => {
+    const repoRoot = join(import.meta.dir, '..');
+    const run = async (args: string[]) => {
+      const proc = Bun.spawn([process.execPath, 'run', join(repoRoot, 'index.ts'), 'export', ...args], {
+        cwd: repoRoot,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        // Sandboxed even though a path target reads no index: a test never touches the
+        // operator's cache dir.
+        env: { ...process.env, SESSIONS_CACHE_DIR: join(tmpdir(), 'sessions-export-test-cache') },
+      });
+      const [code, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      return { code, stdout, stderr };
+    };
+
+    test('refuses to write a document the reference validator would reject', async () => {
+      const { code, stdout, stderr } = await run([harnessOnly]);
+      expect(code).not.toBe(0);
+      expect(stdout).toBe('');
+      expect(stderr).toContain('no exportable sessions — 1 with no user record');
+    }, 20000);
+
+    test('a session that projects cleanly still exports, --strict included', async () => {
+      const { code, stdout } = await run([transcripts(join(CAPTURED, 'claude'))[0]!, '--strict']);
+      expect(code).toBe(0);
+      expect(JSON.parse(stdout.trim()).length).toBeGreaterThan(1);
+    }, 20000);
+  });
 });
 
 test('meta carries what the log recorded and nothing else', () => {

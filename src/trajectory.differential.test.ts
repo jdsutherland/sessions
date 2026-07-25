@@ -41,6 +41,13 @@ const fixtures: [string, Tool][] = (['claude', 'codex', 'pi'] as const).flatMap(
   transcripts(join(CAPTURED, tool)).map((p): [string, Tool] => [p, tool]),
 );
 
+/** Real transcripts that project to a document trajectory-v1 rejects. Not in `fixtures`:
+ *  the shared loops there are about sessions that DO normalize. */
+const unrepresentable: [string, Tool][] = [
+  [join(CAPTURED, 'unrepresentable/claude-harness-only.jsonl'), 'claude'],
+  [join(CAPTURED, 'unrepresentable/codex-no-assistant.jsonl'), 'codex'],
+];
+
 // CODEX_INJECTED is imported, not restated: the reference keeps the AGENTS.md preamble
 // as a user turn where sessions calls it an injection, so the shim applies OUR rule to
 // their output — and a second copy of the list would drift out of sync with it.
@@ -103,6 +110,36 @@ describe.skipIf(!process.env['SESSIONS_ORACLE'])('differential against @letta-ai
       const ourResults = contents(ours, 'tool');
       const theirResults = contents(theirs, 'tool').map((t) => t.replace(/^Error: /, ''));
       expect(ourResults).toEqual(theirResults);
+    });
+  }
+});
+
+/**
+ * The other half of the oracle. validateTranscript is the interop target the export exists
+ * to satisfy, and its semantic layer — a document needs at least one user record and at
+ * least one assistant record — is nowhere in the JSON schema, so a document can pass every
+ * per-record rule and still be refused. `missing` has to predict its verdict exactly, over
+ * every captured transcript, including the ones it refuses.
+ */
+describe.skipIf(!process.env['SESSIONS_ORACLE'])('validateTranscript agrees with `missing`', () => {
+  for (const [path, tool] of [...fixtures, ...unrepresentable]) {
+    test(`${tool}/${path.split('/').pop()}`, async () => {
+      const { validateTranscript } = await import('@letta-ai/trajectory');
+      // Called through a plain signature: it is declared `asserts`, and TypeScript will not
+      // narrow through a binding that came out of a dynamic import.
+      const validate: (value: unknown) => void = validateTranscript;
+      const { records, missing } = toTrajectory(readFileSync(path, 'utf-8').trimEnd().split('\n'), tool);
+      let rejection: string | null = null;
+      try {
+        validate(records);
+      } catch (err) {
+        rejection = (err as Error).message;
+      }
+      if (missing.length === 0) {
+        expect(rejection).toBeNull();
+      } else {
+        expect(rejection).toContain(`at least one ${missing[0]} record`);
+      }
     });
   }
 });
