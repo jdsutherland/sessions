@@ -76,15 +76,15 @@ function getCodexDir(): string {
 // v11: transport banners no longer reach session_fts.context_text. That one IS a write
 // change — a v10 index holds sessions whose only searchable text is `API Error: …` —
 // and unlike message_fts there is no read-path filter to fall back on, so it rebuilds.
-// v13: the thinking column and Pi's files_touched come from the record too — Codex
-// reasoning was hardcoded to '' and Pi's edited-file branch was a no-op, so both were
-// empty for every session that had them.
 // v12: messages come from the record (src/record.ts) instead of extractMessages, so Codex
 // finally has any at all — 292 of 292 indexed Codex sessions held 0 message_fts rows, a
 // blank first_prompt and message_count 0. Nothing re-parses on its own: indexFile skips on
 // unchanged mtime/size and Codex rollouts are append-then-frozen, so without a forced
 // rebuild those rows would stay blank forever. session_id also changes for codex and pi
 // (see src/session-id.ts).
+// v13: the thinking column and Pi's files_touched come from the record too — Codex
+// reasoning was hardcoded to '' and Pi's edited-file branch was a no-op, so both were
+// empty for every session that had them.
 const SCHEMA_VERSION = 13;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
