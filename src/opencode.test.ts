@@ -14,7 +14,8 @@ import {
   closeOpencodeDb,
 } from './opencode';
 import { readSessionLines } from './session-io';
-import { getCwdFromSession, firstPrompt, customTitle, messageCount } from './parser';
+import { getCwdFromSession, firstPrompt, customTitle, messageCount, extractMessages } from './parser';
+import { parseSession, toMessages } from './record';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
@@ -159,6 +160,24 @@ describe('opencode module', () => {
     const errors = extractErrors(lines, 'opencode');
     expect(errors.errored).toBe(true);
     expect(errors.messages[0]).toBe('boom quux');
+  });
+
+  test('the record keeps OpenCode numbering and gains its tool calls', () => {
+    const lines = readOpencodeSession(opencodeFilePath('ses_parent'));
+    const before = extractMessages(lines);
+    const after = toMessages(parseSession(lines, 'opencode'));
+    // Numbering is what an existing index depends on, so it must not move — including
+    // the skip of messages with no renderable parts, which lives in readOpencodeSession.
+    expect(after.map(({ role, text, index, genuine }) => ({ role, text, index, genuine }))).toEqual(
+      before.map(({ role, text, index, genuine }) => ({ role, text, index, genuine })),
+    );
+    // OpenCode packs a call and its result into one `tool` part; extractToolUses matches
+    // only `tool_use`, so both halves were invisible.
+    expect(before.flatMap((m) => m.tools)).toEqual([]);
+    expect(after.flatMap((m) => m.tools).map((t) => t.name)).toEqual(['bash', 'edit', 'read', 'bash']);
+    const rs = parseSession(lines, 'opencode');
+    expect(rs.filter((r) => r.role === 'reasoning').map((r) => r.text)).toEqual(['thinking about zorptastic']);
+    expect(rs.filter((r) => r.role === 'tool' && r.isError).length).toBe(1);
   });
 
   test('collects subagent user text for parent-session recall', () => {

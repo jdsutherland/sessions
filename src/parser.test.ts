@@ -222,13 +222,12 @@ describe('firstPrompt', () => {
     expect(firstPrompt(lines, 'pi')).toBe('Help me debug');
   });
 
-  test('extracts first user prompt for codex sessions', () => {
-    const lines = jsonl(
-      { type: 'session_meta', payload: { cwd: '/tmp' } },
-      { type: 'message', message: { role: 'user', content: [{ type: 'input_text', text: 'Add tests' }] } },
-    );
-    expect(firstPrompt(lines, 'codex')).toBe('Add tests');
-  });
+  // Codex is deliberately absent here. This slot used to assert
+  // `{type:'message', message:{role:'user', content:[{type:'input_text'}]}}`, a shape
+  // that occurs zero times in 54,309 real rollout lines — Codex wraps everything in
+  // `{type:'response_item', payload:{…}}` — so the test passed while firstPrompt
+  // returned '' for all 292 indexed Codex sessions. Codex prompts now come from the
+  // record (src/record.ts), asserted in record.test.ts against captured rollouts.
 
   test('truncates long prompts to 100 chars', () => {
     const longText = 'A'.repeat(200);

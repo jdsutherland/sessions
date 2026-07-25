@@ -1,6 +1,6 @@
 import { type Tool } from './types';
 
-interface JsonLine {
+export interface JsonLine {
   type?: string;
   cwd?: string;
   timestamp?: string;
@@ -19,7 +19,7 @@ interface JsonLine {
   payload?: Record<string, unknown>;
 }
 
-function tryParseJson(line: string): JsonLine | null {
+export function tryParseJson(line: string): JsonLine | null {
   try {
     return JSON.parse(line);
   } catch {
@@ -190,7 +190,7 @@ function stripInjected(text: string): string {
   return text;
 }
 
-function extractUserText(d: JsonLine): string {
+export function extractUserText(d: JsonLine): string {
   const msg = d.message;
   if (!msg || typeof msg !== 'object') return '';
   const content = (msg as Record<string, unknown>).content;
@@ -212,7 +212,7 @@ function extractUserText(d: JsonLine): string {
   return stripInjected(texts.join(' '));
 }
 
-function isUserMessage(d: JsonLine): boolean {
+export function isUserMessage(d: JsonLine): boolean {
   if (d.type === 'user') return true;
   if (d.type === 'message') {
     const msg = d.message;
@@ -238,7 +238,7 @@ const SKILL_INJECTION_PREAMBLE = /^Base directory for this skill:/;
  * <bash-input>, <bash-stdout>, <teammate-message> — are already emptied by
  * stripInjected upstream, so they never reach here with text.)
  */
-function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
+export function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
   if (d.isCompactSummary === true) return false;
   if (!strippedText) return false;
   if (SKILL_INJECTION_PREAMBLE.test(strippedText)) return false;
@@ -437,6 +437,9 @@ export interface SessionMessage {
 /** Input fields, most-informative first, used to summarize a tool call for display. */
 const TOOL_SUMMARY_KEYS = [
   'command',
+  // Codex's exec_command spells it `cmd`; without this the fallback below picks
+  // whichever string property happens to come first (workdir, justification, …).
+  'cmd',
   'file_path',
   'path',
   'pattern',
@@ -449,7 +452,7 @@ const TOOL_SUMMARY_KEYS = [
 ];
 
 /** Reduce a tool_use input object to a single short, human-readable line. */
-function summarizeToolInput(input: unknown): string {
+export function summarizeToolInput(input: unknown): string {
   if (!input || typeof input !== 'object') return '';
   const o = input as Record<string, unknown>;
   let val: string | undefined;
@@ -474,7 +477,7 @@ function summarizeToolInput(input: unknown): string {
  * Claude/Anthropic content-array shape (`{type:'tool_use', name, input}`); returns []
  * for shapes it doesn't model (most pi/codex tool calls), which is a display-only gap.
  */
-function extractToolUses(d: JsonLine): ToolUse[] {
+export function extractToolUses(d: JsonLine): ToolUse[] {
   const msg = d.message;
   if (!msg || typeof msg !== 'object') return [];
   const content = (msg as Record<string, unknown>).content;
@@ -489,7 +492,7 @@ function extractToolUses(d: JsonLine): ToolUse[] {
   return out;
 }
 
-function extractAssistantText(d: JsonLine): string {
+export function extractAssistantText(d: JsonLine): string {
   if (d.type === 'assistant') {
     const msg = d.message;
     if (typeof msg === 'string') return msg;

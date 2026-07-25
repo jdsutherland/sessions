@@ -45,7 +45,7 @@ describe('sessionIdFor', () => {
 // id derived from the path alone must equal the id the transcript states about itself
 // — which is the id report/parsers/{codex,pi} emit for the same file.
 describe('sessionIdFor agrees with the id in the log', () => {
-  for (const tool of ['codex', 'pi'] as const) {
+  for (const tool of ['claude', 'codex', 'pi'] as const) {
     for (const name of readdirSync(join(FIXTURES, tool))) {
       test(`${tool}/${name}`, () => {
         const path = join(FIXTURES, tool, name);
