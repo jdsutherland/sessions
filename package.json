@@ -10,6 +10,7 @@
   },
   "scripts": {
     "dev": "bun run index.ts",
+    "eval": "bun run src/eval/run.ts",
     "generate-plugin-embed": "bun scripts/generate-plugin-embed.ts",
     "generate-pricing-embed": "bun scripts/generate-pricing-embed.ts",
     "build": "bun run generate-plugin-embed && bun run generate-pricing-embed && bun build --compile --minify index.ts --outfile dist/sessions",
