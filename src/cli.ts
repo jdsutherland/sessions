@@ -35,6 +35,10 @@ ${C.bold}Commands:${C.reset}
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
+  export           Print sessions as trajectory-v1 JSONL (one document per
+                   line). <session> exports one; --query "..." exports the
+                   top-ranked matches. --strict fails instead of dropping
+                   records trajectory-v1 cannot carry
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the

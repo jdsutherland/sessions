@@ -99,6 +99,7 @@ sessions --errored           # Only sessions that hit an error
 sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
 sessions digest <session>    # Print one session's arc as compact markdown
+sessions export <session>    # Print a session as a trajectory-v1 document
 sessions report              # Usage report (HTML dashboard, opens in browser)
 ```
 
@@ -108,6 +109,7 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                         |
 | `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id |
+| `export`           | Print sessions as trajectory-v1 JSONL (see [Exporting trajectories](#exporting-trajectories))                                                                        |
 | `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                        |
 | `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                             |
 | `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
@@ -227,6 +229,30 @@ Run without `--hooks` and `setup` will ask interactively (when on a TTY); it is 
 To turn it off, run `sessions uninstall` (which also removes the plugin and MCP config). The hook lives in `~/.claude/settings.json` under `hooks.SessionStart`; enabling and disabling preserve any other hooks you have configured.
 
 > Codex and Cursor are not yet supported — their session-start hook contracts are still being confirmed. The hook also requires `sessions` to be on your `PATH` at session start.
+
+## Exporting trajectories
+
+`sessions export` writes sessions as [trajectory-v1](https://github.com/letta-ai/trajectory) documents — one JSON document per line, so a whole selection streams as one payload.
+
+```sh
+sessions export <session>                    # one session: a file path or a session id
+sessions export --query "flaky retry test"   # the top-ranked matches, best first
+sessions export --query "auth" --here --limit 3 --tool codex
+```
+
+Anyone can read raw transcripts off disk. What sessions adds is the **selection**: `--query` exports the same ranked, junk-filtered results `sessions <query>` shows you — throwaway `/tmp` repros and automated harness runs already removed — across Claude Code, Codex, Pi, and OpenCode in one format.
+
+The session record sessions keeps is a superset of trajectory-v1, so the export is a lossy projection of it. It never invents a field to satisfy the schema; anything it cannot carry is dropped and counted on stderr:
+
+| Dropped                                   | Why                                                                                                              |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Harness-injected user turns               | `AGENTS.md` preambles, `<environment_context>`, task notifications: a user-role line, but not the human speaking |
+| Records the log gave no timestamp         | trajectory-v1 requires an ISO-8601 timestamp on every non-`meta` record                                          |
+| Tool results with no call to join back to | Pi's `bashExecution` channel emits a result the harness never paired with a call                                 |
+
+Empty reasoning is not emitted at all: Claude keeps the thinking signature and discards the text on 99.92% of its records, so its trajectories carry no `reasoning`. Codex and Pi carry theirs. Structured tool arguments are serialized to the JSON string the schema requires, and a call the harness left unidentified (Codex `web_search_call`) gets a synthetic id — nothing joins to it.
+
+Pass `--strict` to exit non-zero instead of dropping a record for a missing timestamp or an unjoinable result. Injected turns are a projection choice rather than a gap, and never fail `--strict`.
 
 ## Usage reports
 

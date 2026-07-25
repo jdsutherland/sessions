@@ -90,6 +90,12 @@ if (command === 'digest') {
   process.exit(0);
 }
 
+if (command === 'export') {
+  const { parseExportArgs, runExport } = await import('./src/trajectory.ts');
+  await runExport(parseExportArgs(Bun.argv.slice(3)));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 
