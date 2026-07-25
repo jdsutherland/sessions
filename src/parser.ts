@@ -440,14 +440,6 @@ export interface ToolUse {
   summary: string;
 }
 
-export interface SessionMessage {
-  role: 'user' | 'assistant';
-  text: string;
-  index: number;
-  /** Tool calls belonging to this turn (empty for most user turns). See extractMessages. */
-  tools: ToolUse[];
-}
-
 /** Input fields, most-informative first, used to summarize a tool call for display. */
 const TOOL_SUMMARY_KEYS = [
   'command',
@@ -549,6 +541,8 @@ export interface ExtractedMessage {
   index: number;
   /** user turns: isGenuineUserTurn; assistant turns: always true. */
   genuine: boolean;
+  /** ISO-8601, as the harness wrote it; '' on the rare line that carries none. */
+  timestamp: string;
   /**
    * Tool calls belonging to this turn. A pure-tool-use assistant line carries no text
    * and so gets no index of its own; its calls fold into the current turn's head
@@ -565,12 +559,12 @@ export interface MessageSummary {
 }
 
 /**
- * The single numbering authority for message extraction. Every non-empty
- * user/assistant message in order, with a sequential index and a `genuine` flag
- * for user turns (injected skill bodies and tool results still consume an index —
- * they are counted, just flagged — so genuineness is metadata, never numbering).
- * Search-hit indices (message_fts) and get_session_messages pagination must agree
- * exactly, so both derive from this function.
+ * The Claude/Pi/OpenCode message walk as it stood before the record existed, kept as
+ * the differential oracle for toMessages(parseSession()) — see record.test.ts, which
+ * runs the two against every transcript on the machine. It returns [] for Codex, whose
+ * envelope none of the dispatchers below recognize; that is the bug the record fixes,
+ * and freezing the old behaviour here is what makes the fix falsifiable.
+ * Production reads go through src/record.ts.
  */
 export function extractMessages(lines: string[]): ExtractedMessage[] {
   const messages: ExtractedMessage[] = [];
@@ -586,7 +580,14 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
     if (isUserMessage(d)) {
       const text = extractUserText(d);
       if (text.trim()) {
-        current = { role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()), tools: pending };
+        current = {
+          role: 'user',
+          text,
+          index: idx++,
+          genuine: isGenuineUserTurn(d, text.trim()),
+          timestamp: d.timestamp ?? '',
+          tools: pending,
+        };
         pending = [];
         messages.push(current);
       }
@@ -596,7 +597,14 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
       const text = extractAssistantText(d);
       const tools = extractToolUses(d);
       if (text.trim()) {
-        current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending.concat(tools) };
+        current = {
+          role: 'assistant',
+          text,
+          index: idx++,
+          genuine: true,
+          timestamp: d.timestamp ?? '',
+          tools: pending.concat(tools),
+        };
         pending = [];
         messages.push(current);
       } else if (tools.length) {
@@ -607,11 +615,6 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
     }
   }
   return messages;
-}
-
-/** Thin projection of extractMessages — same messages, same numbering, no genuine flag. */
-export function getSessionMessages(lines: string[]): SessionMessage[] {
-  return extractMessages(lines).map(({ role, text, index, tools }) => ({ role, text, index, tools }));
 }
 
 /** Max length of each stored closing message (bounds the indexed columns). */
@@ -662,17 +665,6 @@ export function summarizeMessages(messages: ExtractedMessage[]): MessageSummary 
     closingUser: finish(lastUser),
     closingAssistant: finish(stripInsightFences(lastAssistant)),
   };
-}
-
-/**
- * Last user message and last assistant message from a session, stripped of
- * injected tags and truncated to CLOSING_MAX. Both roles are returned so the
- * synthesis layer (Phase 2) can decide what the open thread is — the last
- * assistant turn alone is often a question or tool call, not an outcome.
- */
-export function closingMessages(lines: string[]): { user: string; assistant: string } {
-  const summary = summarizeMessages(extractMessages(lines));
-  return { user: summary.closingUser, assistant: summary.closingAssistant };
 }
 
 export function findMatchContext(lines: string[], query: string): string {

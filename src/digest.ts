@@ -1,12 +1,16 @@
 import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
-import { extractMessages, stripInsightFences } from './parser';
+import { stripInsightFences } from './parser';
+import { parseSession, toMessages } from './record';
 import { resolveSessionFile } from './cache';
-import { readSessionLines } from './session-io';
+import { readSessionLines, toolForSession } from './session-io';
+import { type Tool } from './types';
 
 export interface DigestExchange {
   /** Message index of the user turn — feeds get_session_messages(offset). */
   index: number;
+  /** ISO-8601 of the user turn: when in the session this exchange happened. */
+  at: string;
   /** Genuine user turn, stripped + truncated. */
   user: string;
   /** Last assistant text of the exchange (stripped + truncated); '' if none. */
@@ -46,8 +50,8 @@ function clip(text: string, max: number): string {
  * message indices. The serialized digest is elided from the middle — never the
  * head or tail — until it fits DIGEST_MAX_CHARS.
  */
-export function buildSessionDigest(lines: string[]): SessionDigest {
-  const messages = extractMessages(lines);
+export function buildSessionDigest(lines: string[], tool: Tool): SessionDigest {
+  const messages = toMessages(parseSession(lines, tool));
 
   const all: DigestExchange[] = [];
   let open: DigestExchange | null = null;
@@ -55,6 +59,7 @@ export function buildSessionDigest(lines: string[]): SessionDigest {
     if (!open) return;
     all.push({
       index: open.index,
+      at: open.at,
       user: clip(open.user, USER_MAX),
       assistant: clip(stripInsightFences(open.assistant), ASSISTANT_MAX),
     });
@@ -65,7 +70,7 @@ export function buildSessionDigest(lines: string[]): SessionDigest {
     if (m.role === 'user') {
       if (m.genuine) {
         close();
-        open = { index: m.index, user: m.text, assistant: '' };
+        open = { index: m.index, at: m.timestamp, user: m.text, assistant: '' };
       }
     } else if (open) {
       open.assistant = m.text; // last assistant before the next boundary wins
@@ -124,7 +129,9 @@ export function renderDigestMarkdown(digest: SessionDigest, label: string): stri
   const headLen = Math.ceil(digest.exchanges.length / 2);
   digest.exchanges.forEach((ex, i) => {
     if (digest.elided > 0 && i === headLen) out.push(`_… ${digest.elided} exchanges elided …_\n`);
-    out.push(`**[${ex.index}] user:** ${ex.user}`);
+    // Minute precision: the digest is a bounded payload and the seconds buy nothing.
+    const at = ex.at ? ` ${ex.at.slice(0, 16).replace('T', ' ')}` : '';
+    out.push(`**[${ex.index}]${at} user:** ${ex.user}`);
     if (ex.assistant) out.push(`**assistant:** ${ex.assistant}`);
     out.push('');
   });
@@ -192,7 +199,7 @@ export async function runDigest(args: DigestArgs): Promise<void> {
     if (lines.length === 0) die(`could not read ${filePath}`);
   }
 
-  const digest = buildSessionDigest(lines);
+  const digest = buildSessionDigest(lines, toolForSession(filePath, lines));
   const md = renderDigestMarkdown(digest, basename(filePath));
   process.stdout.write(md.endsWith('\n') ? md : md + '\n');
 }

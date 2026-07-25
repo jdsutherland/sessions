@@ -5,20 +5,22 @@ import {
   firstTimestamp,
   messageCount,
   firstPrompt,
-  getSessionMessages,
   lastTimestamp,
   contentMatches,
   findMatchContext,
   getCwdFromSession,
   sessionBranch,
-  closingMessages,
   extractSessionMetadata,
   summarizeMessages,
 } from './parser';
+import { getSessionMessages, parseSession, toMessages } from './record';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
+
+/** summarizeMessages' closing columns for a Claude transcript. */
+const closing = (lines: string[]) => summarizeMessages(toMessages(parseSession(lines, 'claude')));
 
 describe('extractSessionMetadata', () => {
   test('matches the individual Claude metadata helpers in one pass', () => {
@@ -119,7 +121,8 @@ test('summarizeMessages reuses extracted messages without changing prompt or clo
 
   const summary = summarizeMessages(extractMessages(lines));
   expect(summary.firstPrompt).toBe(firstPrompt(lines, 'claude'));
-  expect({ user: summary.closingUser, assistant: summary.closingAssistant }).toEqual(closingMessages(lines));
+  expect(summary.closingUser).toBe('is it done?');
+  expect(summary.closingAssistant).toBe('yes, it is done');
 });
 
 describe('customTitle', () => {
@@ -299,7 +302,7 @@ describe('getSessionMessages', () => {
       { type: 'user', message: { content: [{ type: 'text', text: 'What is 2+2?' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'The answer is 4.' }] } },
     );
-    const msgs = getSessionMessages(lines);
+    const msgs = getSessionMessages(lines, 'claude');
     expect(msgs).toHaveLength(2);
     expect(msgs[0]!.role).toBe('user');
     expect(msgs[0]!.text).toContain('2+2');
@@ -312,18 +315,32 @@ describe('getSessionMessages', () => {
       { type: 'user', message: { content: [{ type: 'text', text: '' }] } },
       { type: 'user', message: { content: [{ type: 'text', text: 'real question' }] } },
     );
-    const msgs = getSessionMessages(lines);
+    const msgs = getSessionMessages(lines, 'claude');
     expect(msgs).toHaveLength(1);
     expect(msgs[0]!.text).toContain('real question');
   });
 
-  test('handles pi/codex message format', () => {
+  test('handles the pi message format', () => {
     const lines = jsonl(
       { type: 'message', message: { role: 'user', content: 'hello' } },
       { type: 'message', message: { role: 'assistant', content: 'hi there' } },
     );
-    const msgs = getSessionMessages(lines);
-    expect(msgs).toHaveLength(2);
+    expect(getSessionMessages(lines, 'pi')).toHaveLength(2);
+  });
+
+  test('carries the harness timestamp through to the caller', () => {
+    const lines = jsonl(
+      { type: 'user', timestamp: '2026-03-15T10:00:00Z', message: { content: [{ type: 'text', text: 'when?' }] } },
+      {
+        type: 'assistant',
+        timestamp: '2026-03-15T10:04:12Z',
+        message: { content: [{ type: 'text', text: 'now' }] },
+      },
+    );
+    expect(getSessionMessages(lines, 'claude').map((m) => m.timestamp)).toEqual([
+      '2026-03-15T10:00:00Z',
+      '2026-03-15T10:04:12Z',
+    ]);
   });
 });
 
@@ -352,7 +369,7 @@ describe('extractMessages', () => {
 
   test('numbering parity: indices, roles, and texts match getSessionMessages element-for-element', () => {
     const extracted = extractMessages(mixed);
-    const legacy = getSessionMessages(mixed);
+    const legacy = getSessionMessages(mixed, 'claude');
     expect(extracted.length).toBe(legacy.length);
     for (let i = 0; i < extracted.length; i++) {
       expect(extracted[i]!.index).toBe(legacy[i]!.index);
@@ -401,7 +418,7 @@ describe('extractMessages', () => {
     );
     const msgs = extractMessages(lines);
     expect(msgs.map((m) => m.index)).toEqual([0, 1]);
-    expect(msgs.map((m) => m.index)).toEqual(getSessionMessages(lines).map((m) => m.index));
+    expect(msgs.map((m) => m.index)).toEqual(getSessionMessages(lines, 'claude').map((m) => m.index));
   });
 
   test('compaction summaries are not genuine (auto-generated context carryover)', () => {
@@ -543,7 +560,7 @@ describe('firstPrompt genuine-turn intent', () => {
   });
 });
 
-describe('closingMessages user side', () => {
+describe('summarizeMessages closing user side', () => {
   test('closing.user is the last genuine typed turn, not a trailing skill load', () => {
     const lines = jsonl(
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'commit and PR it' }] } },
@@ -554,7 +571,7 @@ describe('closingMessages user side', () => {
         message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] },
       },
     );
-    expect(closingMessages(lines).user).toBe('commit and PR it');
+    expect(closing(lines).closingUser).toBe('commit and PR it');
   });
 
   test('old logs (no promptSource): heuristic still drops a skill-injection turn', () => {
@@ -562,11 +579,11 @@ describe('closingMessages user side', () => {
       { type: 'user', message: { content: [{ type: 'text', text: 'fix the bug' }] } },
       { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /z' }] } },
     );
-    expect(closingMessages(lines).user).toBe('fix the bug');
+    expect(closing(lines).closingUser).toBe('fix the bug');
   });
 });
 
-describe('closingMessages assistant side', () => {
+describe('summarizeMessages closing assistant side', () => {
   test('strips ★ Insight fence markers but keeps the body and outcome', () => {
     const assistantText = [
       'Done. Shipped it.',
@@ -579,7 +596,7 @@ describe('closingMessages assistant side', () => {
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'ship it' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
     );
-    const a = closingMessages(lines).assistant;
+    const a = closing(lines).closingAssistant;
     expect(a).toContain('Done. Shipped it.');
     expect(a).toContain('The index is the moat.');
     expect(a).not.toContain('★');
@@ -592,7 +609,7 @@ describe('closingMessages assistant side', () => {
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'advise' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
     );
-    const a = closingMessages(lines).assistant;
+    const a = closing(lines).closingAssistant;
     expect(a).toContain('-----'); // ASCII rule is not the box-drawing fence
     expect(a).toContain('Insight'); // bare heading, no ★ marker
     expect(a).toContain('pick the first.');
@@ -669,7 +686,7 @@ describe('tool-call extraction (include_tools support)', () => {
       { type: 'assistant', message: { content: [{ type: 'text', text: 'b' }] } },
     );
     const extracted = extractMessages(lines);
-    const legacy = getSessionMessages(lines);
+    const legacy = getSessionMessages(lines, 'claude');
     expect(extracted.map((m) => m.index)).toEqual([0, 1]);
     expect(legacy.map((m) => m.index)).toEqual([0, 1]);
     expect(legacy[0]!.tools.map((t) => t.name)).toEqual(['Bash']); // folded onto the user turn

@@ -123,7 +123,14 @@ export function toMessages(records: SessionRecord[]): ExtractedMessage[] {
     if (r.role === 'reasoning' || r.role === 'tool') continue;
     const tools = r.toolCalls.map((t) => ({ name: t.name, summary: t.summary }));
     if (r.index >= 0) {
-      current = { role: r.role, text: r.text, index: r.index, genuine: r.genuine, tools: pending.concat(tools) };
+      current = {
+        role: r.role,
+        text: r.text,
+        index: r.index,
+        genuine: r.genuine,
+        timestamp: r.timestamp,
+        tools: pending.concat(tools),
+      };
       pending = [];
       messages.push(current);
     } else if (tools.length) {
@@ -132,6 +139,27 @@ export function toMessages(records: SessionRecord[]): ExtractedMessage[] {
     }
   }
   return messages;
+}
+
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  index: number;
+  /** ISO-8601, as the harness wrote it; '' on the rare line that carries none. */
+  timestamp: string;
+  /** Tool calls belonging to this turn (empty for most user turns). See toMessages. */
+  tools: ToolUse[];
+}
+
+/** Thin projection of the record — same messages, same numbering, no genuine flag. */
+export function getSessionMessages(lines: string[], tool: Tool): SessionMessage[] {
+  return toMessages(parseSession(lines, tool)).map(({ role, text, index, timestamp, tools }) => ({
+    role,
+    text,
+    index,
+    timestamp,
+    tools,
+  }));
 }
 
 // ——— shared record constructors ———
@@ -305,7 +333,9 @@ function parsePi(lines: string[]): SessionRecord[] {
     const toolCalls = blocks
       .filter((b) => b['type'] === 'toolCall')
       .map((b) => call(String(b['id'] ?? ''), typeof b['name'] === 'string' ? b['name'] : '?', b['arguments']));
-    const text = textOf(blocks, 'text');
+    // extractAssistantText, not the block walk above: older Pi logs put the whole reply
+    // in `content` as a bare string, and that shape must keep parsing the same way.
+    const text = extractAssistantText(d);
     if (!text.trim() && toolCalls.length === 0) continue;
     out.push({
       role: 'assistant',
@@ -387,7 +417,7 @@ function parseOpencode(lines: string[]): SessionRecord[] {
       r.isError = state['status'] === 'error';
       results.push(r);
     }
-    const text = textOf(blocks, 'text');
+    const text = extractAssistantText(d);
     if (text.trim() || toolCalls.length > 0) {
       out.push({ role: 'assistant', index: -1, timestamp: ts, text, genuine: true, toolCalls });
     }

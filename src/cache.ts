@@ -16,13 +16,7 @@ import {
   type ContextHeadline,
   type MessageHit,
 } from './types';
-import {
-  getSessionMessages,
-  extractSessionMetadata,
-  summarizeMessages,
-  harnessNoiseSql,
-  isHarnessNoise,
-} from './parser';
+import { extractSessionMetadata, summarizeMessages, harnessNoiseSql, isHarnessNoise } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
@@ -30,7 +24,7 @@ import { extractThinking } from './extract-thinking';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
 import { sessionIdFor } from './session-id';
-import { parseSession, toMessages } from './record';
+import { getSessionMessages, parseSession, toMessages } from './record';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
@@ -318,7 +312,7 @@ function collectSubagentContent(filePath: string): string {
       try {
         const raw = readFileSync(join(dir, f), 'utf-8');
         const lines = raw.trimEnd().split('\n');
-        const msgs = getSessionMessages(lines);
+        const msgs = getSessionMessages(lines, 'claude');
         for (const m of msgs) {
           if (m.role === 'user') parts.push(m.text);
         }
@@ -1075,9 +1069,9 @@ interface PendingGroup {
   rows: DateRangeRow[];
 }
 
-function readUserMessages(filePath: string, mode: 'full' | 'highlights'): string[] {
-  const lines = readSessionLines(filePath);
-  const msgs = getSessionMessages(lines).filter((m) => m.role === 'user');
+function readUserMessages(filePath: string, tool: Tool, mode: 'full' | 'highlights'): string[] {
+  const lines = readSessionLines(filePath, tool);
+  const msgs = getSessionMessages(lines, tool).filter((m) => m.role === 'user');
   if (msgs.length === 0) return [];
 
   const cap = (t: string, len: number) => (t.length > len ? t.slice(0, len) + '…' : t);
@@ -1165,7 +1159,7 @@ export async function getActivityDigest(
             title: r.custom_title || r.first_prompt,
             messageCount: r.message_count,
             filePath: r.file_path,
-            userMessages: readUserMessages(r.file_path, detail),
+            userMessages: readUserMessages(r.file_path, r.tool as Tool, detail),
           }),
         );
       }

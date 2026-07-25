@@ -105,6 +105,78 @@ beforeAll(async () => {
     ].join('\n'),
   );
 
+  // Session D: a Codex rollout. Envelope shapes are the real ones (the authority is
+  // src/__fixtures__/codex, captured from ~/.codex/sessions); the prose is controlled
+  // here because the alignment assertion below needs a term unique to one message.
+  const codexDir = join(tmp, 'codex', '2026', '06', '04');
+  mkdirSync(codexDir, { recursive: true });
+  const ri = (payload: unknown, at: string): string => j({ timestamp: at, type: 'response_item', payload });
+  writeFileSync(
+    join(codexDir, 'rollout-2026-06-04T10-00-00-019dc17e-b2db-7343-8066-3bea6c30d63a.jsonl'),
+    [
+      j({
+        timestamp: '2026-06-04T10:00:00Z',
+        type: 'session_meta',
+        payload: { id: '019dc17e-b2db-7343-8066-3bea6c30d63a', cwd: '/repoD', git: { branch: 'main' } },
+      }),
+      // The injected system prompt: present in every rollout, never a turn.
+      ri(
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '<permissions instructions>' }] },
+        '2026-06-04T10:00:01Z',
+      ),
+      ri(
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'trace the snorkelbeam timeout' }] },
+        '2026-06-04T10:00:02Z',
+      ),
+      ri({ type: 'reasoning', summary: [], content: null, encrypted_content: 'gAAAAAB…' }, '2026-06-04T10:00:03Z'),
+      ri(
+        {
+          type: 'function_call',
+          name: 'exec_command',
+          call_id: 'call_1',
+          arguments: j({ cmd: 'rg snorkelbeam', workdir: '/repoD' }),
+        },
+        '2026-06-04T10:00:04Z',
+      ),
+      ri({ type: 'function_call_output', call_id: 'call_1', output: 'no matches' }, '2026-06-04T10:00:05Z'),
+      // The richer event-stream copy of the same exec: resolved argv and an exit code,
+      // which is why extractCommands reads this and not the function_call arguments.
+      j({
+        timestamp: '2026-06-04T10:00:05Z',
+        type: 'event_msg',
+        payload: {
+          type: 'exec_command_end',
+          call_id: 'call_1',
+          command: ['/bin/zsh', '-lc', 'rg snorkelbeam'],
+          cwd: '/repoD',
+          exit_code: 0,
+          stdout: '',
+          stderr: '',
+        },
+      }),
+      ri(
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'the timeout is in the retry wrapper' }],
+        },
+        '2026-06-04T10:00:06Z',
+      ),
+      // The genuineness oracle, which Codex writes AFTER its response_item twin.
+      j({
+        timestamp: '2026-06-04T10:00:07Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: 'trace the snorkelbeam timeout', images: [] },
+      }),
+      // The UI copy of the assistant turn — indexing both would double-count it.
+      j({
+        timestamp: '2026-06-04T10:00:08Z',
+        type: 'event_msg',
+        payload: { type: 'agent_message', message: 'the timeout is in the retry wrapper' },
+      }),
+    ].join('\n'),
+  );
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -146,6 +218,38 @@ test('alignment: messageHits[0].index feeds get_session_messages(offset) to the 
   const paged = JSON.parse(page.content[0]!.text);
   expect(paged.returned).toBe(1);
   expect(paged.messages[0].text).toContain('mangowurzel');
+});
+
+// The whole point of the record: before it, every indexed Codex session had zero
+// message_fts rows and a blank first_prompt, so none of this was reachable.
+test('codex: a rollout indexes, and its hit index still feeds get_session_messages', async () => {
+  const res = await mcp.runSearchSessions({ query: 'snorkelbeam' });
+  const parsed = JSON.parse(res.content[0]!.text);
+  const d = parsed.find((r: { tool: string }) => r.tool === 'codex');
+  expect(d.sessionId).toBe('019dc17e-b2db-7343-8066-3bea6c30d63a'); // the id, not the rollout filename
+  expect(d.snippet).toBe('trace the snorkelbeam timeout');
+  expect(d.commands[0]).toContain('rg snorkelbeam'); // resolved argv, from exec_command_end
+  expect(d.resumeCommand).toBe('cd "/repoD"'); // Codex has no resume flag
+
+  const hit = d.messageHits[0];
+  const page = await mcp.runGetSessionMessages({ filePath: d.filePath, offset: hit.index, limit: 1 });
+  const paged = JSON.parse(page.content[0]!.text);
+  // Two messages, not three: the developer prompt is not a turn and the agent_message
+  // event is the same assistant turn the response_item already carries.
+  expect(paged.total).toBe(2);
+  expect(paged.messages[0].text).toContain('snorkelbeam');
+  expect(paged.messages[0].at).toBe('2026-06-04T10:00:02Z');
+});
+
+test('get_session_messages carries each turn timestamp', async () => {
+  const res = await mcp.runSearchSessions({ query: 'mangowurzel' });
+  const parsed = JSON.parse(res.content[0]!.text);
+  const page = await mcp.runGetSessionMessages({ filePath: parsed[0].filePath, offset: 0, limit: 3 });
+  expect(JSON.parse(page.content[0]!.text).messages.map((m: { at: string }) => m.at)).toEqual([
+    '2026-06-02T10:00:00Z',
+    '2026-06-02T10:01:00Z',
+    '2026-06-02T10:02:00Z',
+  ]);
 });
 
 test('search_sessions: a metadata-only match carries empty messageHits', async () => {

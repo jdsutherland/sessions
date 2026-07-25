@@ -1,5 +1,6 @@
 import { readFileSync, statSync } from 'node:fs';
 import { type Tool } from './types';
+import { tryParseJson } from './parser';
 import { isOpencodePath, readOpencodeSession, opencodeStat } from './opencode';
 
 // Generic session IO: every consumer (indexer, scanner, digest, MCP) reads a
@@ -21,6 +22,26 @@ export function readSessionLines(filePath: string, tool?: Tool): string[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * Which harness wrote a transcript, read off the lines themselves.
+ *
+ * Read-path callers (get_session_messages, `sessions digest <file>`) hold a file path
+ * and nothing else, and parseSession needs a tool — so this is the one place that
+ * answers the question, rather than each caller re-deriving it from directory layout
+ * (which a copied or fixture transcript would defeat). Codex and Pi both declare
+ * themselves on line 0 in all 466 real transcripts on the author's machine; Claude
+ * opens on whichever sidecar row the CLI happened to write first, so it is the default.
+ */
+export function toolForSession(filePath: string, lines: string[]): Tool {
+  if (isOpencodePath(filePath)) return 'opencode';
+  for (const line of lines.slice(0, 5)) {
+    const type = tryParseJson(line)?.type;
+    if (type === 'session_meta' || type === 'response_item') return 'codex';
+    if (type === 'session') return 'pi';
+  }
+  return 'claude';
 }
 
 /** Cache-invalidation signal for a session: filesystem stat for JSONL tools, DB metadata for OpenCode. */

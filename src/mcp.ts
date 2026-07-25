@@ -3,10 +3,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { searchSessions, grepSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
 import { formatResult, buildResumeCommand } from './search-format';
-import { getSessionMessages } from './parser';
+import { getSessionMessages } from './record';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
-import { readSessionLines } from './session-io';
+import { readSessionLines, toolForSession } from './session-io';
 import { type Tool } from './types';
 
 const server = new McpServer(
@@ -154,7 +154,7 @@ server.tool(
 // Exported, testable seam like runSearchSessions: the get_session_messages tool
 // delegates here so the search-hit → offset alignment can be integration-tested
 // without MCP plumbing. Pagination runs over getSessionMessages, whose numbering
-// is identical to the msg_index search hits carry (both derive from extractMessages).
+// is identical to the msg_index search hits carry (both derive from parseSession).
 export async function runGetSessionMessages(args: {
   filePath: string;
   offset?: number;
@@ -169,7 +169,7 @@ export async function runGetSessionMessages(args: {
   if (lines.length === 0) {
     return { content: [{ type: 'text' as const, text: `Could not read session: ${args.filePath}` }], isError: true };
   }
-  const allMessages = getSessionMessages(lines);
+  const allMessages = getSessionMessages(lines, toolForSession(args.filePath, lines));
   const page = allMessages.slice(offset, offset + limit);
 
   const result = {
@@ -180,12 +180,13 @@ export async function runGetSessionMessages(args: {
       includeTools
         ? {
             role: m.role,
+            at: m.timestamp,
             text: m.text,
             // Rendered as `Name(summary)` one-liners; a turn's tool calls fold in here
             // (pure-tool-use turns have no index of their own).
             tools: m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name)),
           }
-        : { role: m.role, text: m.text },
+        : { role: m.role, at: m.timestamp, text: m.text },
     ),
   };
 
@@ -225,7 +226,7 @@ export async function runGetSessionDigest(args: {
     return { content: [{ type: 'text' as const, text: `Could not read session: ${args.filePath}` }], isError: true };
   }
 
-  const digest = buildSessionDigest(lines);
+  const digest = buildSessionDigest(lines, toolForSession(args.filePath, lines));
   return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
 }
 
