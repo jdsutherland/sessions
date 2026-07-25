@@ -8,6 +8,8 @@ import { getSessionMessages } from './record';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines, toolForSession } from './session-io';
+import { rememberLesson, LESSON_MAX_CHARS, DETAIL_MAX_CHARS, type Scope } from './memory';
+import { resolveProvenance } from './provenance';
 import { type Tool } from './types';
 
 const server = new McpServer(
@@ -20,7 +22,8 @@ const server = new McpServer(
       'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
       'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
       'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
-      'Prefer bounded calls: get_session_digest over paging full transcripts.',
+      'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
+      'Sessions are a record of what happened; lessons are assertions someone made about this repo. get_context_primer carries both — call it before starting substantive work — and remember_lesson is how a hard-won finding gets into it instead of being re-derived next session.',
   },
 );
 
@@ -293,7 +296,7 @@ server.tool(
 
 server.tool(
   'get_context_primer',
-  'Get a repo-scoped context primer (recent sessions in detail + older headlines) for re-injecting prior work into a new session. Use when starting substantive work in a repo that likely has session history — especially resuming after a break or when the user asks "where did we leave off" / "catch me up". Synthesize the JSON into prose.',
+  'Get a repo-scoped context primer for re-injecting prior work into a new session: saved lessons for this repo, then recent sessions in detail, then older headlines. Use when starting substantive work in a repo that likely has session history — especially resuming after a break or when the user asks "where did we leave off" / "catch me up". `lessons` are assertions someone chose to keep, not transcript history: treat them as standing guidance, and note that a lesson with verified=false cannot be traced back to the conversation that produced it. lessonsFlagged counts lessons withheld because they conflict — mention it rather than guessing which is right. Synthesize the JSON into prose.',
   {
     cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
     limit: z.number().optional().describe('Recent-tier size (default 10).'),
@@ -311,6 +314,74 @@ server.tool(
     if (primer.isEmpty) return { content: [{ type: 'text' as const, text: 'No past sessions found for this repo.' }] };
     return { content: [{ type: 'text' as const, text: JSON.stringify(primer) }] };
   },
+);
+
+// Exported, testable seam like the others: the remember_lesson tool delegates here so
+// provenance resolution and the store's outcomes can be tested without MCP plumbing.
+// `meta` is the raw request `_meta` — the only place a client's session identity ever
+// comes from, and the reason the tool takes no session argument.
+export function runRememberLesson(
+  args: {
+    lesson: string;
+    detail?: string;
+    scope?: Scope;
+    files?: string[];
+    supersedes?: number;
+    cwd?: string;
+  },
+  meta?: Record<string, unknown>,
+): { content: { type: 'text'; text: string }[]; isError?: boolean } {
+  const repo = resolveRepo(args.cwd ?? process.cwd());
+  const result = rememberLesson({
+    lesson: args.lesson,
+    detail: args.detail,
+    scope: args.scope,
+    files: args.files,
+    supersedes: args.supersedes,
+    container: repo?.container ?? '',
+    remote: repo?.remote ?? '',
+    source: resolveProvenance(meta),
+  });
+
+  const payload = {
+    outcome: result.outcome,
+    id: result.id,
+    status: result.status,
+    provenance: result.provenance,
+    sourceVerified: result.verified,
+    conflicts: result.conflicts,
+    message: result.message,
+  };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    ...(result.outcome === 'rejected' ? { isError: true } : {}),
+  };
+}
+
+server.tool(
+  'remember_lesson',
+  'Save one durable lesson from this session so the next one does not re-derive it. Call it when something was learned the hard way: a root cause that took real work to find, a convention or preference the user corrected you on, an approach that looked right and was not. Do NOT call it for what the code or git history already says, for task state, or to recap what you just did — those are not lessons and they are what turns this into a junk drawer. Write `lesson` as one transferable sentence useful to someone who was not here, and put the file, root cause, and fix in `detail`; over-length input is rejected rather than truncated, so compress instead of trimming. Do not try to pass a session id — the server resolves provenance from the client itself, and anything you supplied would be a guess. Re-saving the same lesson is free and inserts nothing. If it overlaps an existing lesson, BOTH are flagged and neither is served until a human resolves it — when that comes back, raise the conflict with the user instead of rewording and saving again.',
+  {
+    lesson: z.string().min(1).describe(`The transferable principle, one sentence, max ${LESSON_MAX_CHARS} chars.`),
+    detail: z.string().optional().describe(`The specifics: file, root cause, fix. Max ${DETAIL_MAX_CHARS} chars.`),
+    scope: z
+      .enum(['repo', 'global'])
+      .optional()
+      .default('repo')
+      .describe('"repo" (default) for this codebase; "global" only for something true across every project.'),
+    files: z.array(z.string()).optional().describe('Paths the lesson is about, if any.'),
+    supersedes: z
+      .number()
+      .int()
+      .optional()
+      .describe('Id of a lesson this corrects. The old one is marked superseded, never edited or deleted.'),
+    cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
+  },
+  async ({ lesson, detail, scope, files, supersedes, cwd }, extra) =>
+    runRememberLesson(
+      { lesson, detail, scope, files, supersedes, cwd },
+      extra?._meta as Record<string, unknown> | undefined,
+    ),
 );
 
 export async function startMcpServer() {

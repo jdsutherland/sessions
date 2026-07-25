@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -395,4 +395,184 @@ test('server exits when the client closes stdin instead of lingering as an orpha
   const result = await Promise.race([proc.exited, Bun.sleep(5000).then(() => 'orphaned' as const)]);
   if (result === 'orphaned') proc.kill();
   expect(result).toBe(0);
+}, 15000);
+
+// ——— remember_lesson ———
+
+/** A real git repo, so resolveRepo returns a container the way it does in production. */
+function initRepo(name: string): string {
+  const dir = join(tmp, name);
+  mkdirSync(dir, { recursive: true });
+  Bun.spawnSync(['git', 'init', '-q', dir]);
+  Bun.spawnSync(['git', '-C', dir, 'remote', 'add', 'origin', 'git@github.com:nicknisi/probe.git']);
+  return realpathSync(dir); // git reports the resolved path; /var is a symlink on macOS
+}
+
+function parse(res: { content: { text: string }[] }): any {
+  return JSON.parse(res.content[0]!.text);
+}
+
+test('remember_lesson saves a repo-scoped lesson and reports how provenance was resolved', async () => {
+  const repo = initRepo('lesson-repo');
+  const memory = await import('./memory');
+  memory.closeMemoryDb();
+
+  const res = mcp.runRememberLesson({
+    lesson: 'The webhook retry budget is per-endpoint, not per-account.',
+    detail: 'src/webhooks/retry.ts: the limiter keys on endpoint id',
+    cwd: repo,
+  });
+  const out = parse(res);
+
+  expect(res.isError).toBeUndefined();
+  expect(out.outcome).toBe('saved');
+  expect(out.provenance).toBe('none'); // no _meta, no env id → said plainly, not invented
+  expect(out.sourceVerified).toBe(false);
+
+  const stored = memory.listLessons({ all: true }).find((r) => r.id === out.id)!;
+  expect(stored.repo_container).toBe(repo);
+  expect(stored.repo_remote).toBe('github.com/nicknisi/probe');
+  expect(stored.source_session).toBeNull();
+});
+
+test('remember_lesson takes no session id — a codex _meta id is what resolves it', async () => {
+  const repo = initRepo('lesson-meta');
+  const memory = await import('./memory');
+  memory.closeMemoryDb();
+
+  const sessionId = '019f9a9b-2222-4333-8444-555555555555';
+  const rolloutDir = join(tmp, 'codex', '2026', '07', '25');
+  mkdirSync(rolloutDir, { recursive: true });
+  writeFileSync(join(rolloutDir, `rollout-2026-07-25T13-44-01-${sessionId}.jsonl`), '{}\n');
+
+  const out = parse(
+    mcp.runRememberLesson(
+      { lesson: 'Codex rollouts are append-then-frozen, so an mtime skip strands them.', cwd: repo },
+      { 'x-codex-turn-metadata': { session_id: sessionId }, threadId: sessionId },
+    ),
+  );
+
+  expect(out.provenance).toBe('meta');
+  expect(out.sourceVerified).toBe(true);
+  const stored = memory.listLessons({ all: true }).find((r) => r.id === out.id)!;
+  expect(stored.source_session).toBe(sessionId);
+  expect(stored.source_transcript).toContain(sessionId);
+});
+
+test('remember_lesson rejects over-length input instead of truncating it', async () => {
+  const repo = initRepo('lesson-long');
+  const memory = await import('./memory');
+  memory.closeMemoryDb();
+
+  const res = mcp.runRememberLesson({ lesson: 'x'.repeat(400), cwd: repo });
+  expect(res.isError).toBe(true);
+  expect(parse(res).outcome).toBe('rejected');
+  expect(parse(res).message).toContain('compress');
+});
+
+test('remember_lesson returns the conflict rather than quietly storing a variant', async () => {
+  const repo = initRepo('lesson-conflict');
+  const memory = await import('./memory');
+  memory.closeMemoryDb();
+
+  mcp.runRememberLesson({ lesson: 'The lesson store lives outside the cache directory.', cwd: repo });
+  const out = parse(mcp.runRememberLesson({ lesson: 'The lesson store lives inside the cache directory.', cwd: repo }));
+
+  expect(out.outcome).toBe('conflict');
+  expect(out.status).toBe('needs_review');
+  expect(out.conflicts).toHaveLength(1);
+  expect(out.message).toContain('Raise the conflict with the user');
+});
+
+test('the MCP surface is 8 tools and remember_lesson is one of them', async () => {
+  const proc = Bun.spawn([process.execPath, 'run', join(import.meta.dir, '..', 'index.ts'), '--mcp'], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'ignore',
+    env: { ...process.env, SESSIONS_MEMORY_DB: join(tmp, 'memory.db') },
+  });
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+
+  const reader = proc.stdout.getReader();
+  await reader.read(); // initialize response
+  proc.stdin.write(`${j({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);
+  await proc.stdin.flush();
+  const listed = new TextDecoder().decode((await reader.read()).value);
+  reader.releaseLock();
+  proc.stdin.end();
+  await proc.exited;
+
+  const tools = JSON.parse(listed.split('\n').filter(Boolean).pop()!).result.tools as { name: string }[];
+  const names = tools.map((t) => t.name).sort();
+  expect(names).toEqual([
+    'get_activity_digest',
+    'get_context_primer',
+    'get_session_digest',
+    'get_session_messages',
+    'get_session_metrics',
+    'grep_sessions',
+    'remember_lesson',
+    'search_sessions',
+  ]);
+}, 15000);
+
+// The linchpin: _meta must survive the real SDK round-trip, or every provenance
+// signal that is not an environment variable is unreachable in production.
+test('a client _meta reaches the tool handler over a real stdio transport', async () => {
+  const repo = initRepo('lesson-wire');
+  const wireDb = join(tmp, 'wire-memory.db');
+  const sessionId = '019f9a9b-9999-4888-8777-666666666666';
+  const rolloutDir = join(tmp, 'codex', '2026', '07', '26');
+  mkdirSync(rolloutDir, { recursive: true });
+  writeFileSync(join(rolloutDir, `rollout-2026-07-26T09-00-00-${sessionId}.jsonl`), '{}\n');
+
+  const proc = Bun.spawn([process.execPath, 'run', join(import.meta.dir, '..', 'index.ts'), '--mcp'], {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'ignore',
+    env: { ...process.env, SESSIONS_MEMORY_DB: wireDb, SESSIONS_CODEX_DIR: join(tmp, 'codex') },
+  });
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '0' } },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+
+  const reader = proc.stdout.getReader();
+  await reader.read();
+  proc.stdin.write(
+    `${j({
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'remember_lesson',
+        arguments: { lesson: 'A lesson whose provenance came over the wire.', cwd: repo },
+        _meta: { 'x-codex-turn-metadata': { session_id: sessionId }, threadId: sessionId },
+      },
+    })}\n`,
+  );
+  await proc.stdin.flush();
+  const called = new TextDecoder().decode((await reader.read()).value);
+  reader.releaseLock();
+  proc.stdin.end();
+  await proc.exited;
+
+  const body = JSON.parse(called.split('\n').filter(Boolean).pop()!);
+  const payload = JSON.parse(body.result.content[0].text);
+  expect(payload.outcome).toBe('saved');
+  expect(payload.provenance).toBe('meta');
+  expect(payload.sourceVerified).toBe(true);
 }, 15000);
