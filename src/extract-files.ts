@@ -1,4 +1,5 @@
 import type { Tool } from './types';
+import type { SessionRecord } from './record';
 import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored edited-file paths per session (bounds the indexed column). */
@@ -54,13 +55,32 @@ function extractCodex(lines: string[], push: (p: string) => void): void {
 }
 
 /**
- * Pi: edited-file shape needs real captured logs to reverse-engineer. No Pi
- * session with file edits exists in `~/.pi/agent/sessions` to confirm the
- * tool-call envelope, so this branch is a deliberate no-op per the spec's Open
- * Items (returns `[]` until fixtures land). TODO: implement against real logs.
+ * Pi: `edit` and `write` tool calls, keyed on `arguments.path` (not `file_path`, not
+ * `filePath`). This was a deliberate no-op — not for want of logs, but because nothing
+ * could read a Pi tool call: extractToolUses matches `tool_use` and Pi emits `toolCall`.
+ * The record models both, so the branch is now three lines. Measured here: 47 of 159 Pi
+ * sessions edit files, and all 155 indexed ones stored `files_touched: []`.
  */
-function extractPi(_lines: string[], _push: (p: string) => void): void {
-  // Intentionally empty — see doc comment above.
+function extractPi(records: SessionRecord[], push: (p: string) => void): void {
+  for (const call of records.flatMap((r) => r.toolCalls)) {
+    if (call.name !== 'edit' && call.name !== 'write') continue;
+    const path = (call.args as Record<string, unknown> | null)?.['path'];
+    if (typeof path === 'string' && path) push(path);
+  }
+}
+
+/** Pi: read/searched targets — `read`/`ls` take `path`, `grep`/`find` take `pattern`. */
+function extractPiRead(records: SessionRecord[], push: (p: string) => void): void {
+  for (const call of records.flatMap((r) => r.toolCalls)) {
+    const args = (call.args as Record<string, unknown> | null) ?? {};
+    const path =
+      call.name === 'read' || call.name === 'ls'
+        ? args['path']
+        : call.name === 'grep' || call.name === 'find'
+          ? (args['path'] ?? args['pattern'])
+          : undefined;
+    if (typeof path === 'string' && path) push(path);
+  }
 }
 
 /**
@@ -88,8 +108,15 @@ function extractOpencode(lines: string[], push: (p: string) => void): void {
   }
 }
 
-/** De-duplicated, order-preserving, capped list of source-file paths edited during a session. */
-export function extractFiles(lines: string[], tool: Tool): string[] {
+/**
+ * De-duplicated, order-preserving, capped list of source-file paths edited during a
+ * session. Takes both the raw lines and the parsed record the indexer already built:
+ * Pi reads the record, and the others still read lines because their evidence is not
+ * a tool call — OpenCode's `patch` parts are a session-level summary of what changed,
+ * and moving those branches would perturb `files_touched` (and so the eval baseline)
+ * for no gain.
+ */
+export function extractFiles(lines: string[], tool: Tool, records: SessionRecord[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (path: string): void => {
@@ -100,7 +127,7 @@ export function extractFiles(lines: string[], tool: Tool): string[] {
 
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
-  else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'pi') extractPi(records, push);
   else if (tool === 'opencode') extractOpencode(lines, push);
 
   return out;
@@ -129,11 +156,11 @@ function extractClaudeRead(lines: string[], push: (p: string) => void): void {
 }
 
 /**
- * Read/searched (not edited) file targets, for the searchable `paths` column.
- * Codex/Pi read-target shapes need fixtures to confirm — deliberate no-op until
- * then, mirroring the edited-files Pi no-op.
+ * Read/searched (not edited) file targets, for the searchable `paths` column. Codex
+ * remains empty: it reads files through `exec_command` shell lines (`sed -n '1,220p' …`),
+ * which record no structured path anywhere.
  */
-export function extractFilesRead(lines: string[], tool: Tool): string[] {
+export function extractFilesRead(lines: string[], tool: Tool, records: SessionRecord[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   const push = (path: string): void => {
@@ -142,6 +169,7 @@ export function extractFilesRead(lines: string[], tool: Tool): string[] {
     out.push(path);
   };
   if (tool === 'claude') extractClaudeRead(lines, push);
+  else if (tool === 'pi') extractPiRead(records, push);
   else if (tool === 'opencode') extractOpencodeRead(lines, push);
   return out;
 }

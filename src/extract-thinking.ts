@@ -1,33 +1,23 @@
-import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import type { SessionRecord } from './record';
 
 export const MAX_THINKING_LEN = 20_000;
 
-function collect(lines: string[]): string {
+/**
+ * Plaintext reasoning for the (low-weighted) `thinking` FTS column, read straight off
+ * the record. The per-tool dispatch this used to carry is gone, and with it the
+ * `if (tool === 'codex') return ''` that made every Codex session's reasoning
+ * permanently unsearchable — Codex ships 97.6% of its reasoning encrypted, but the
+ * `agent_reasoning` events and `summary_text` records it does write in the clear were
+ * being thrown away too (7 of 300 rollouts here, 107KB of text).
+ *
+ * What each harness supplies is the adapters' business now (src/record.ts). Worth
+ * knowing: for Claude this is empty in almost every session, because 12,768 of 12,778
+ * real thinking blocks carry `thinking: ""`.
+ */
+export function extractThinking(records: SessionRecord[]): string {
   const parts: string[] = [];
-  for (const line of lines) {
-    const d = tryParse(line);
-    if (!d || (d.type !== 'assistant' && d.type !== 'message')) continue;
-    const msg = d.message as Record<string, unknown> | undefined;
-    if (!msg || typeof msg !== 'object') continue;
-    const content = msg.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      if (b.type === 'thinking' && typeof b.thinking === 'string') parts.push(b.thinking);
-    }
+  for (const r of records) {
+    if (r.role === 'reasoning') parts.push(r.text);
   }
   return parts.join('\n').slice(0, MAX_THINKING_LEN);
-}
-
-/**
- * Plaintext reasoning text for the (low-weighted) `thinking` FTS column. Claude and
- * Pi store `thinking` blocks in assistant content, and OpenCode's synthesized lines
- * carry them too (its `reasoning` parts — see src/opencode.ts); Codex reasoning is
- * encrypted in the logs, so Codex returns empty.
- */
-export function extractThinking(lines: string[], tool: Tool): string {
-  if (tool === 'codex') return '';
-  return collect(lines);
 }

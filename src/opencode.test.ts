@@ -153,10 +153,11 @@ describe('opencode module', () => {
 
   test('extractors read the synthesized OpenCode blocks', () => {
     const lines = readOpencodeSession(opencodeFilePath('ses_parent'));
-    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/app/router.ts']);
-    expect(extractFilesRead(lines, 'opencode')).toEqual(['/repo/app/old.ts']);
+    const records = parseSession(lines, 'opencode');
+    expect(extractFiles(lines, 'opencode', records)).toEqual(['/repo/app/router.ts']);
+    expect(extractFilesRead(lines, 'opencode', records)).toEqual(['/repo/app/old.ts']);
     expect(extractCommands(lines, 'opencode')).toEqual(['bun test', 'x']); // a failed command still ran
-    expect(extractThinking(lines, 'opencode')).toBe('thinking about zorptastic');
+    expect(extractThinking(records)).toBe('thinking about zorptastic');
     const errors = extractErrors(lines, 'opencode');
     expect(errors.errored).toBe(true);
     expect(errors.messages[0]).toBe('boom quux');

@@ -1,9 +1,16 @@
 import { describe, test, expect } from 'bun:test';
 import { extractFiles, extractFilesRead, MAX_FILES } from './extract-files';
+import { parseSession } from './record';
+import type { Tool } from './types';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
+
+// The indexer parses each session once and hands the record to the extractors; these
+// wrappers do the same so a test never sees a record that disagrees with its lines.
+const filesOf = (lines: string[], tool: Tool): string[] => extractFiles(lines, tool, parseSession(lines, tool));
+const readsOf = (lines: string[], tool: Tool): string[] => extractFilesRead(lines, tool, parseSession(lines, tool));
 
 function claudeToolUse(name: string, input: Record<string, unknown>): Record<string, unknown> {
   return { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name, input }] } };
@@ -15,7 +22,7 @@ describe('extractFiles — claude', () => {
       { type: 'user', message: { role: 'user', content: 'hello' } },
       { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } },
     );
-    expect(extractFiles(lines, 'claude')).toEqual([]);
+    expect(filesOf(lines, 'claude')).toEqual([]);
   });
 
   test('collects Edit/Write/MultiEdit paths, deduped and in first-seen order', () => {
@@ -25,24 +32,24 @@ describe('extractFiles — claude', () => {
       claudeToolUse('MultiEdit', { file_path: '/repo/c.ts' }),
       claudeToolUse('Edit', { file_path: '/repo/a.ts' }), // duplicate
     );
-    expect(extractFiles(lines, 'claude')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
+    expect(filesOf(lines, 'claude')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
   });
 
   test('reads NotebookEdit from notebook_path', () => {
     const lines = jsonl(claudeToolUse('NotebookEdit', { notebook_path: '/repo/nb.ipynb' }));
-    expect(extractFiles(lines, 'claude')).toEqual(['/repo/nb.ipynb']);
+    expect(filesOf(lines, 'claude')).toEqual(['/repo/nb.ipynb']);
   });
 
   test('ignores non-editing tool_use blocks (Read, Bash)', () => {
     const lines = jsonl(claudeToolUse('Read', { file_path: '/repo/a.ts' }), claudeToolUse('Bash', { command: 'ls' }));
-    expect(extractFiles(lines, 'claude')).toEqual([]);
+    expect(filesOf(lines, 'claude')).toEqual([]);
   });
 
   test('caps the result at MAX_FILES', () => {
     const lines = Array.from({ length: MAX_FILES + 10 }, (_, i) =>
       JSON.stringify(claudeToolUse('Edit', { file_path: `/repo/f${i}.ts` })),
     );
-    expect(extractFiles(lines, 'claude')).toHaveLength(MAX_FILES);
+    expect(filesOf(lines, 'claude')).toHaveLength(MAX_FILES);
   });
 });
 
@@ -68,22 +75,18 @@ describe('extractFiles — codex', () => {
       '*** Delete File: /repo/gone.ts',
       '*** End Patch',
     ].join('\n');
-    expect(extractFiles(jsonl(applyPatch(patch)), 'codex')).toEqual([
-      '/repo/new.ts',
-      '/repo/existing.ts',
-      '/repo/gone.ts',
-    ]);
+    expect(filesOf(jsonl(applyPatch(patch)), 'codex')).toEqual(['/repo/new.ts', '/repo/existing.ts', '/repo/gone.ts']);
   });
 
   test('dedupes paths touched by multiple patches', () => {
     const p1 = ['*** Begin Patch', '*** Update File: /repo/a.ts', '@@', '+x', '*** End Patch'].join('\n');
     const p2 = ['*** Begin Patch', '*** Update File: /repo/a.ts', '@@', '+y', '*** End Patch'].join('\n');
-    expect(extractFiles(jsonl(applyPatch(p1), applyPatch(p2)), 'codex')).toEqual(['/repo/a.ts']);
+    expect(filesOf(jsonl(applyPatch(p1), applyPatch(p2)), 'codex')).toEqual(['/repo/a.ts']);
   });
 
   test('returns [] for a codex session with no patches', () => {
     const lines = jsonl({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [] } });
-    expect(extractFiles(lines, 'codex')).toEqual([]);
+    expect(filesOf(lines, 'codex')).toEqual([]);
   });
 });
 
@@ -103,7 +106,7 @@ describe('extractFiles — opencode', () => {
         { type: 'patch', files: ['/repo/a.ts', '/repo/c.ts'] }, // a.ts is a duplicate
       ),
     );
-    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
+    expect(filesOf(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
   });
 
   test('parses apply_patch headers like codex', () => {
@@ -114,7 +117,7 @@ describe('extractFiles — opencode', () => {
       '*** Update File: /repo/existing.ts',
       '*** End Patch',
     ].join('\n');
-    expect(extractFiles(jsonl(ocAssistant(tool('apply_patch', { patchText }))), 'opencode')).toEqual([
+    expect(filesOf(jsonl(ocAssistant(tool('apply_patch', { patchText }))), 'opencode')).toEqual([
       '/repo/new.ts',
       '/repo/existing.ts',
     ]);
@@ -129,21 +132,36 @@ describe('extractFiles — opencode', () => {
         tool('edit', { filePath: '/repo/edited.ts' }),
       ),
     );
-    expect(extractFilesRead(lines, 'opencode')).toEqual(['/repo/read.ts', '/repo/src', 'packages/**/x*']);
-    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/edited.ts']);
+    expect(readsOf(lines, 'opencode')).toEqual(['/repo/read.ts', '/repo/src', 'packages/**/x*']);
+    expect(filesOf(lines, 'opencode')).toEqual(['/repo/edited.ts']);
   });
 });
 
 describe('extractFiles — pi', () => {
-  // TODO: Pi's edited-file shape is unconfirmed — no captured Pi session with file
-  // edits exists yet. Per the spec's Open Items this branch returns [] until real
-  // fixtures land. This test pins the documented current behavior.
-  test('returns [] (branch deferred pending real fixtures)', () => {
+  const piToolCall = (name: string, args: Record<string, unknown>): Record<string, unknown> => ({
+    type: 'message',
+    message: { role: 'assistant', content: [{ type: 'toolCall', id: `call_${name}`, name, arguments: args }] },
+  });
+
+  test('returns [] for a session with no edits', () => {
     const lines = jsonl(
       { type: 'session', cwd: '/repo' },
       { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
     );
-    expect(extractFiles(lines, 'pi')).toEqual([]);
+    expect(filesOf(lines, 'pi')).toEqual([]);
+  });
+
+  // `path`, not `file_path` and not `filePath` — the key real Pi logs use.
+  test('reads edit and write tool calls, keyed on arguments.path', () => {
+    const lines = jsonl(
+      { type: 'session', cwd: '/repo' },
+      piToolCall('edit', { path: 'src/cache.ts', oldText: 'a', newText: 'b' }),
+      piToolCall('write', { path: 'src/new.ts', content: 'x' }),
+      piToolCall('read', { path: 'src/untouched.ts' }),
+      piToolCall('bash', { command: 'ls' }),
+    );
+    expect(filesOf(lines, 'pi')).toEqual(['src/cache.ts', 'src/new.ts']);
+    expect(readsOf(lines, 'pi')).toEqual(['src/untouched.ts']);
   });
 });
 
@@ -165,6 +183,6 @@ test('read: claude Read/Grep targets, separate from edited files', () => {
       },
     }),
   ];
-  expect(extractFilesRead(lines, 'claude')).toEqual(['/repo/src/cache.ts']);
-  expect(extractFiles(lines, 'claude')).toEqual(['/repo/src/parser.ts']);
+  expect(readsOf(lines, 'claude')).toEqual(['/repo/src/cache.ts']);
+  expect(filesOf(lines, 'claude')).toEqual(['/repo/src/parser.ts']);
 });
