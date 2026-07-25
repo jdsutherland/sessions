@@ -245,6 +245,14 @@ function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
  * without a reindex, and adding an entry hides text from ranking rather than
  * destroying it.
  *
+ * The banner family reaches the index by a second route as well: extractErrors copies
+ * a transport banner into `session_fts.context_text`, where it ranks at bm25 2.0 and
+ * needs no message hit to place a session. That column is one blob per session with no
+ * per-line granularity to filter on read, so it is filtered on the way in instead —
+ * `isHarnessNoise` below, same list. Only the text is dropped: a banner is still
+ * evidence the session hit an error, so `errored` and error_count keep counting it and
+ * wrapped's error census is unaffected.
+ *
  * Explicit strings only, deliberately — a length or shape heuristic here would eat
  * real short messages ("yes, use the raw body"). Counts below are occurrences in the
  * author's index; extend the lists as new banners show up.
@@ -275,6 +283,14 @@ export function harnessNoiseSql(col: string): string {
   const clauses = [`trim(${col}) IN (${[...NOISE_EXACT].map(quote).join(', ')})`];
   for (const p of NOISE_PREFIXES) clauses.push(`substr(trim(${col}), 1, ${p.length}) = ${quote(p)}`);
   return `(${clauses.join(' OR ')})`;
+}
+
+/** The same denylist as a JS predicate, for the write-path caller that has the text in
+ *  hand (the `context_text` projection in cache.ts). Trims and compares case-sensitively
+ *  so the two call sites agree on exactly which strings are noise. */
+export function isHarnessNoise(text: string): boolean {
+  const t = text.trim();
+  return NOISE_EXACT.has(t) || NOISE_PREFIXES.some((p) => t.startsWith(p));
 }
 
 export interface GenuineUserTurn {

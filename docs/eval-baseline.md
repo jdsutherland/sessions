@@ -39,7 +39,7 @@ recall@5 saturates on a corpus this size, so recall@1 and MRR (over a 10-result 
 | nl-webhook-signature-fix      | multi-word-natural-language | 2    | 5562  | s02-paddle-webhook-signature         |
 | nl-worker-own-database        | multi-word-natural-language | 1    | 6116  | s17-worker-postgres-split            |
 | nl-flaky-ci                   | multi-word-natural-language | 1    | 6506  | s12-flaky-ci-tests                   |
-| nl-rate-limiting              | multi-word-natural-language | 1    | 4708  | s16-public-api-rate-limiting         |
+| nl-rate-limiting              | multi-word-natural-language | 1    | 5193  | s16-public-api-rate-limiting         |
 | scoped-webhook-checkout-api   | scoped                      | 1    | 2177  | s01-stripe-webhook-signature         |
 | scoped-database-locked-pi     | scoped                      | 1    | 2108  | s10-sqlite-busy-index                |
 | scoped-shared-postgres-pi     | scoped                      | 1    | 1636  | s17-worker-postgres-split            |

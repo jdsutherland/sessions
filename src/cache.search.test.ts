@@ -413,6 +413,20 @@ function messageRowCount(filePath: string): number {
   }
 }
 
+function errorCensus(filePath: string): { errored: number; error_count: number } {
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    const row = db
+      .query<{ errored: number; error_count: number }, [string]>(
+        'SELECT errored, error_count FROM sessions WHERE file_path = ?',
+      )
+      .get(filePath);
+    return row ?? { errored: 0, error_count: 0 };
+  } finally {
+    db.close();
+  }
+}
+
 const cPath = () => join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'c.jsonl');
 
 test('localization: a term seeded only in message N yields messageHits[0].index === N', async () => {
@@ -757,12 +771,23 @@ test('harness noise rows are filtered out of search in either role', async () =>
   // 1 genuine user turn + 1 real assistant turn + the six banners: every row is
   // indexed, the filter runs on read.
   expect(messageRowCount(join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'i.jsonl'))).toBe(8);
-  // The transport-error banner is also counted as an error, so extractErrors still
-  // copies it into session_fts.context_text and the session stays findable that way —
-  // a metadata match with no message hit. Removing it there is a separate decision:
-  // the same text drives `errored`, error_count and wrapped's error census.
-  const api = (await cache.searchSessions('API Error', {})).find((x) => x.sessionId === 'i');
-  expect(api?.messageHits).toEqual([]);
+});
+
+test('a transport banner marks the session errored without becoming searchable text', async () => {
+  // The banner reaches the index by two routes, and the message_fts one above is only
+  // half the job: extractErrors also copies it into session_fts.context_text, which
+  // ranks at bm25 2.0 and needs no message hit to place a session. Detection and text
+  // part ways here — the session is still evidence of an error…
+  const iPath = join(process.env.SESSIONS_CLAUDE_DIR!, 'proj', 'i.jsonl');
+  expect(errorCensus(iPath)).toEqual({ errored: 1, error_count: 1 });
+  expect((await cache.searchSessions('flimbertrove', { errored: true })).map((x) => x.sessionId)).toEqual(['i']);
+  // …but its text no longer places it, by either route: before this, `rate limit
+  // reached` returned it as a metadata match with an empty messageHits.
+  for (const term of ['API Error', '"rate limit reached"']) {
+    expect([term, (await cache.searchSessions(term, {})).map((x) => x.sessionId)]).toEqual([term, []]);
+  }
+  // and grep still reaches it, the same contract the message rows keep
+  expect((await cache.grepSessions('API Error: Rate limit reached', {})).totalHits).toBe(1);
 });
 
 test('grep stays exhaustive: every harness noise row search hides is still findable', async () => {

@@ -22,6 +22,7 @@ import {
   extractSessionMetadata,
   summarizeMessages,
   harnessNoiseSql,
+  isHarnessNoise,
 } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
@@ -78,7 +79,10 @@ function getCodexDir(): string {
 // has since moved to the search read path (grep_sessions must stay exhaustive), so v10
 // changes nothing about what is written — but v9's command clipping still does, so an
 // index built before 10 has to rebuild and the number stays where it is.
-const SCHEMA_VERSION = 10;
+// v11: transport banners no longer reach session_fts.context_text. That one IS a write
+// change — a v10 index holds sessions whose only searchable text is `API Error: …` —
+// and unlike message_fts there is no read-path filter to fall back on, so it rebuilds.
+const SCHEMA_VERSION = 11;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -385,7 +389,13 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const headline = `${summary.firstPrompt}\n${metadata.customTitle}`;
   const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
   const commandsText = commandsArr.join('\n');
-  const contextText = errors.messages.join('\n');
+  // Error messages minus the transport banners: `API Error: Rate limit reached` is
+  // harness bookkeeping, not prose about the work, and context_text ranks at bm25 2.0 —
+  // enough to place a banner-only session in the top 20 for "rate limit reached" with no
+  // message hit behind it. The banner still counts as an error above (errored,
+  // error_count, and so wrapped's census); only its text stops being searchable, and
+  // grep_sessions still reaches the row in message_fts.
+  const contextText = errors.messages.filter((m) => !isHarnessNoise(m)).join('\n');
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
