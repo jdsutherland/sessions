@@ -9,6 +9,7 @@ import {
   deferredLessons,
   exportLessons,
   listLessons,
+  quarantinedStores,
   recoverLesson,
   resolveReview,
   reviewGroups,
@@ -109,12 +110,40 @@ function provenanceLabel(row: LessonRow): string {
   return `${row.provenance} · unverifiable`;
 }
 
+/** Names the decision a row is in, so it can be seen and undone. */
+function statusLabel(row: LessonRow): string {
+  switch (row.status) {
+    case 'active':
+      return 'active';
+    case 'needs_review':
+      return 'pending review';
+    case 'retired':
+      return 'retired';
+    case 'superseded':
+      return `superseded by #${row.superseded_by}`;
+  }
+}
+
 function formatRow(row: LessonRow): string {
   const scope = row.scope === 'global' ? 'global' : basename(row.repo_container) || 'repo';
+  // Everything but `active` is marked. In `review` that is what separates the rows
+  // being decided from the ones only there to explain the conflict.
+  const state = row.status === 'active' ? '' : ` · ${statusLabel(row)}`;
   const out = [`${C.bold}#${row.id}${C.reset} ${row.lesson}`];
   if (row.detail) out.push(`     ${C.dim}${row.detail}${C.reset}`);
-  out.push(`     ${C.dim}${scope} · ${row.created_at.slice(0, 10)} · ${provenanceLabel(row)}${C.reset}`);
+  out.push(`     ${C.dim}${scope} · ${row.created_at.slice(0, 10)} · ${provenanceLabel(row)}${state}${C.reset}`);
   return out.join('\n');
+}
+
+/** A store that was moved aside is reported before anything else, on every listing. */
+function warnQuarantined(): void {
+  for (const path of quarantinedStores()) {
+    process.stderr.write(
+      `${C.red}!${C.reset} the lesson store was corrupt and was moved aside — nothing in it is being served:\n` +
+        `    ${path}\n` +
+        `${C.dim}  Nothing was deleted. Recover it with \`sqlite3 <file> .dump\`, or remove it to clear this notice.${C.reset}\n`,
+    );
+  }
 }
 
 async function runList(args: LessonsArgs): Promise<void> {
@@ -124,9 +153,12 @@ async function runList(args: LessonsArgs): Promise<void> {
     container: repo?.container ?? '',
     remote: repo?.remote ?? '',
   });
+  // After the read, which is what moves a corrupt file aside.
+  warnQuarantined();
 
   const active = rows.filter((r) => r.status === 'active');
   const flagged = rows.filter((r) => r.status === 'needs_review');
+  const gone = rows.filter((r) => r.status === 'superseded' || r.status === 'retired');
 
   if (rows.length === 0) {
     const where = args.all ? '' : ' for this repo';
@@ -142,11 +174,19 @@ async function runList(args: LessonsArgs): Promise<void> {
         `${C.dim}— withheld from the primer until resolved. Run \`sessions lessons review\`.${C.reset}`,
     );
   }
+  // A row can leave service without anyone watching — a review, a retire, or a
+  // supersedes from an agent. Listing them is what makes that reversible.
+  if (gone.length > 0) {
+    out.push(`\n${C.dim}${gone.length} out of service — kept, never deleted:${C.reset}`);
+    for (const row of gone) out.push(`${C.dim}  #${row.id} ${statusLabel(row)} — ${row.lesson}${C.reset}`);
+  }
   await writeStdoutFully(out.join('\n') + '\n');
 }
 
 async function runReview(args: LessonsArgs): Promise<void> {
   const groups = reviewGroups();
+  warnQuarantined();
+
   if (groups.length === 0) {
     process.stderr.write(`${C.dim}No conflicting lessons to review.${C.reset}\n`);
     return;
@@ -155,6 +195,14 @@ async function runReview(args: LessonsArgs): Promise<void> {
   for (const group of groups) {
     process.stderr.write(`\n${C.bold}Conflict${C.reset} ${C.dim}(group ${group.group})${C.reset}\n`);
     for (const row of group.rows) process.stderr.write(`${formatRow(row)}\n`);
+    // A group can carry rows that are only there to explain it — a retired lesson the
+    // newcomer overlaps, or a supersedes target it never matched. Say so, because the
+    // choice below does not touch them.
+    if (group.rows.some((r) => r.status !== 'needs_review')) {
+      process.stderr.write(
+        `  ${C.dim}Only the rows marked "pending review" are decided here; the rest are context and stay as they are.${C.reset}\n`,
+      );
+    }
 
     // Nothing is ever merged. Whichever way this goes, both texts stay readable —
     // the loser is marked superseded or retired, not rewritten.

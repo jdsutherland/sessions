@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeEach, afterAll } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, test, expect, beforeEach, afterAll, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -54,7 +54,32 @@ beforeEach(() => {
   mem.closeMemoryDb();
   rmSync(memoryDb, { force: true });
   rmSync(claudeDir, { recursive: true, force: true });
+  for (const f of readdirSync(fixtureRoot)) {
+    if (f.includes('.corrupt-')) rmSync(join(fixtureRoot, f));
+  }
 });
+
+/** Run a `sessions lessons` action with both streams captured. */
+async function capture(args: Parameters<typeof lessons.runLessons>[0]): Promise<string> {
+  const chunks: string[] = [];
+  const collect = (s: unknown) => {
+    chunks.push(String(s));
+    return true;
+  };
+  const err = spyOn(process.stderr, 'write').mockImplementation(collect);
+  const out = spyOn(process.stdout, 'write').mockImplementation((s: unknown, cb?: unknown) => {
+    collect(s);
+    if (typeof cb === 'function') cb();
+    return true;
+  });
+  try {
+    await lessons.runLessons(args);
+  } finally {
+    err.mockRestore();
+    out.mockRestore();
+  }
+  return chunks.join('');
+}
 
 afterAll(() => {
   mem.closeMemoryDb();
@@ -72,6 +97,61 @@ describe('parseLessonsArgs', () => {
     expect(lessons.parseLessonsArgs(['export', '--out', 'l.json'])).toMatchObject({ action: 'export', out: 'l.json' });
     expect(lessons.parseLessonsArgs(['audit']).action).toBe('audit');
     expect(lessons.parseLessonsArgs(['retire', '7'])).toMatchObject({ action: 'retire', id: 7 });
+  });
+});
+
+/**
+ * A row can leave service without anyone watching — a review, a retire, or an agent's
+ * `supersedes`. The default listing showed only active and flagged rows, so the only
+ * way to notice was `export` or opening the database.
+ */
+describe('the listing shows what left service', () => {
+  function save(lesson: string) {
+    return mem.rememberLesson({
+      lesson,
+      container: REPO,
+      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
+    });
+  }
+
+  test('a retired lesson is listed, with the decision that took it out', async () => {
+    const kept = save('Worktrees collapse to one container key.');
+    const gone = save('Timezone bucketing happens once, in the report pipeline.');
+    mem.retireLesson(gone.id!);
+
+    const out = await capture({ action: 'list', all: true });
+    expect(out).toContain(`#${kept.id}`);
+    expect(out).toContain('1 out of service');
+    expect(out).toContain(`#${gone.id} retired`);
+  });
+
+  test('a superseded lesson names its successor', async () => {
+    const first = save('The lesson store lives outside the cache directory.');
+    const second = mem.rememberLesson({
+      lesson: 'The lesson store lives inside the cache directory.',
+      container: REPO,
+      supersedes: first.id,
+      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
+    });
+
+    const out = await capture({ action: 'list', all: true });
+    expect(out).toContain(`#${first.id} superseded by #${second.id}`);
+  });
+});
+
+describe('a quarantined store is never a silent empty list', () => {
+  test('list says the store was moved aside instead of reporting no lessons', async () => {
+    writeFileSync(memoryDb, 'this is not a sqlite database at all');
+    const out = await capture({ action: 'list', all: true });
+    expect(out).toContain('the lesson store was corrupt and was moved aside');
+    expect(out).toContain('.corrupt-');
+    expect(out).toContain('Nothing was deleted');
+  });
+
+  test('review says it too, rather than "no conflicting lessons"', async () => {
+    writeFileSync(memoryDb, 'this is not a sqlite database at all');
+    const out = await capture({ action: 'review', all: false });
+    expect(out).toContain('moved aside');
   });
 });
 
