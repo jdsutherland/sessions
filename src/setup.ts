@@ -1,10 +1,21 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 import { enableSessionHook, disableSessionHook } from './hooks';
 import { getDataDir, getHome, getMemoryDbPath } from './paths';
 import { countLessons, purgeLessons } from './memory';
+import {
+  detectClients,
+  wireJsonClient,
+  unwireJsonClient,
+  wireCodex,
+  unwireCodex,
+  codexManualBlock,
+  cleanDeadConfigs,
+  type McpClient,
+  type WireResult,
+} from './mcp-config';
 
 // Resolved per call rather than frozen at import so SESSIONS_HOME / SESSIONS_DATA_DIR
 // let install and uninstall be exercised without touching the real home.
@@ -13,33 +24,6 @@ const pluginDest = (): string => join(sessionsDir(), 'plugin');
 const PLUGIN_VERSION = '1.15.3'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
-
-interface ToolConfig {
-  name: string;
-  detected: boolean;
-  mcpConfigPath: string;
-}
-
-function detectTools(): ToolConfig[] {
-  const home = getHome();
-  return [
-    {
-      name: 'Claude Code',
-      detected: existsSync(join(home, '.claude')),
-      mcpConfigPath: join(home, '.claude', '.mcp.json'),
-    },
-    {
-      name: 'Cursor',
-      detected: existsSync(join(home, '.cursor')),
-      mcpConfigPath: join(home, '.cursor', '.mcp.json'),
-    },
-    {
-      name: 'Codex',
-      detected: existsSync(join(home, '.codex')),
-      mcpConfigPath: join(home, '.codex', '.mcp.json'),
-    },
-  ];
-}
 
 function findPluginSource(): string {
   const candidates = [
@@ -111,27 +95,34 @@ function sessionsCommand(): string {
   return 'sessions';
 }
 
-function configureMcp(tool: ToolConfig): boolean {
+/** Wire one detected client into the file it actually reads. */
+function configureMcp(client: McpClient): WireResult {
+  const cmd = sessionsCommand();
+  switch (client.id) {
+    // Claude Code gets its server from the plugin, not from a config file of ours.
+    case 'claude':
+      return registerClaudePlugin();
+    case 'codex':
+      return wireCodex(client.configPath, cmd);
+    default:
+      return wireJsonClient(client.configPath, client.id, cmd);
+  }
+}
+
+function unconfigureMcp(client: McpClient): WireResult {
+  switch (client.id) {
+    case 'claude':
+      return unregisterClaudePlugin();
+    case 'codex':
+      return unwireCodex(client.configPath);
+    default:
+      return unwireJsonClient(client.configPath);
+  }
+}
+
+function hasClaudeCli(): boolean {
   try {
-    const cmd = sessionsCommand();
-    let config: Record<string, unknown> = {};
-
-    if (existsSync(tool.mcpConfigPath)) {
-      try {
-        config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
-      } catch {}
-    }
-
-    const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
-    servers.sessions = {
-      command: cmd,
-      args: ['--mcp'],
-    };
-    config.mcpServers = servers;
-
-    mkdirSync(dirname(tool.mcpConfigPath), { recursive: true });
-    writeFileSync(tool.mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
-    return true;
+    return Bun.spawnSync(['which', 'claude'], { stdout: 'pipe', stderr: 'pipe' }).exitCode === 0;
   } catch {
     return false;
   }
@@ -146,15 +137,23 @@ function runClaude(...args: string[]): boolean {
   }
 }
 
-function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
-  const marketplace = runClaude('marketplace', 'add', sessionsDir());
-  const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
-  return { marketplace, install };
+/**
+ * Register the plugin, which is how the MCP server reaches Claude Code. Without
+ * the CLI there is nothing to register through — say so rather than report a
+ * success the user would only discover was false when a tool call went missing.
+ */
+function registerClaudePlugin(): WireResult {
+  if (!hasClaudeCli()) return { status: 'refused', reason: '`claude` is not on your PATH' };
+  runClaude('marketplace', 'add', sessionsDir());
+  if (!runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`)) return { status: 'unchanged' };
+  return { status: 'added' };
 }
 
-function unregisterClaudePlugin(): void {
-  runClaude('uninstall', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+function unregisterClaudePlugin(): WireResult {
+  if (!hasClaudeCli()) return { status: 'refused', reason: '`claude` is not on your PATH' };
+  const removed = runClaude('uninstall', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
   runClaude('marketplace', 'remove', MARKETPLACE_NAME);
+  return { status: removed ? 'added' : 'unchanged' };
 }
 
 export interface SetupOptions {
@@ -183,6 +182,56 @@ function shouldEnableHook(opts: SetupOptions): boolean {
   return answer === 'y' || answer === 'yes';
 }
 
+function tilde(path: string): string {
+  const home = getHome();
+  return path.startsWith(home) ? '~' + path.slice(home.length) : path;
+}
+
+/** What to do by hand when we could not, or would not, edit a client's config. */
+function manualStep(client: McpClient): string[] {
+  const cmd = sessionsCommand();
+  if (client.id === 'claude') {
+    return [
+      `claude plugins marketplace add ${sessionsDir()}`,
+      `claude plugins install ${PLUGIN_NAME}@${MARKETPLACE_NAME}`,
+    ];
+  }
+  if (client.id === 'codex') return codexManualBlock(cmd).split('\n');
+  const entry =
+    client.id === 'pi'
+      ? `"type": "stdio", "command": "${cmd}", "args": ["--mcp"]`
+      : `"command": "${cmd}", "args": ["--mcp"]`;
+  return [`"sessions": { ${entry} }`];
+}
+
+/**
+ * Report only what happened. A client we detected but did not wire says so and
+ * says what to do about it — the alternative is a green check for a client that
+ * will never load the server.
+ */
+function reportWiring(w: (s: string) => void, client: McpClient, result: WireResult): void {
+  const name = client.name.padEnd(12);
+  const isPlugin = client.id === 'claude';
+  const where = isPlugin ? 'the plugin' : tilde(client.configPath);
+
+  if (result.status === 'added') {
+    const what = isPlugin
+      ? `plugin registered ${C.dim}(the MCP server ships with it)${C.reset}`
+      : `MCP server ${client.id === 'codex' ? 'merged into' : 'written to'} ${C.dim}${where}${C.reset}`;
+    w(`  ${C.green}✓${C.reset} ${name}${what}\n`);
+    return;
+  }
+  if (result.status === 'unchanged') {
+    const what = isPlugin ? 'plugin already registered' : `already configured in ${C.dim}${where}${C.reset}`;
+    w(`  ${C.dim}ℹ${C.reset} ${name}${what}\n`);
+    return;
+  }
+
+  w(`  ${C.red}✗${C.reset} ${name}detected but NOT configured — ${result.reason}\n`);
+  w(`      ${C.dim}${isPlugin ? 'Register it yourself:' : `Add it yourself in ${where}:`}${C.reset}\n`);
+  for (const line of manualStep(client)) w(`        ${C.dim}${line}${C.reset}\n`);
+}
+
 export function runSetup(opts: SetupOptions = {}): void {
   const w = (s: string) => process.stderr.write(s);
 
@@ -195,38 +244,24 @@ export function runSetup(opts: SetupOptions = {}): void {
     process.exit(1);
   }
 
-  const tools = detectTools();
-  const detected = tools.filter((t) => t.detected);
+  for (const path of cleanDeadConfigs()) {
+    w(`  ${C.green}✓${C.reset} Removed dead config no client reads ${C.dim}${tilde(path)}${C.reset}\n`);
+  }
+
+  const detected = detectClients().filter((c) => c.detected);
 
   if (detected.length === 0) {
-    w(`\n  ${C.dim}No AI tools detected. Install Claude Code, Cursor, or Codex first.${C.reset}\n\n`);
+    w(`\n  ${C.dim}No AI tools detected. Install Claude Code, Cursor, Codex, or Pi first.${C.reset}\n\n`);
     process.exit(0);
   }
 
-  for (const tool of detected) {
-    if (configureMcp(tool)) {
-      w(`  ${C.green}✓${C.reset} MCP server added to ${C.dim}${tool.name}${C.reset}\n`);
-    } else {
-      w(`  ${C.red}✗${C.reset} Failed to configure MCP for ${tool.name}\n`);
-    }
-
-    if (tool.name === 'Claude Code') {
-      const result = registerClaudePlugin();
-      if (result.marketplace) {
-        w(`  ${C.green}✓${C.reset} Marketplace added to ${C.dim}${tool.name}${C.reset}\n`);
-      } else {
-        w(`  ${C.dim}ℹ${C.reset} Marketplace already registered with ${C.dim}${tool.name}${C.reset}\n`);
-      }
-      if (result.install) {
-        w(`  ${C.green}✓${C.reset} Plugin installed in ${C.dim}${tool.name}${C.reset}\n`);
-      } else {
-        w(`  ${C.dim}ℹ${C.reset} Plugin already installed in ${C.dim}${tool.name}${C.reset}\n`);
-      }
-    }
+  w('\n');
+  for (const client of detected) {
+    reportWiring(w, client, configureMcp(client));
   }
 
   // SessionStart auto-injection hook — opt-in, Claude Code only for now.
-  const claudeDetected = detected.some((t) => t.name === 'Claude Code');
+  const claudeDetected = detected.some((c) => c.id === 'claude');
   if (claudeDetected && shouldEnableHook(opts)) {
     const res = enableSessionHook('claude');
     if (res.changed) {
@@ -257,26 +292,23 @@ export function runUninstall(opts: UninstallOptions = {}): void {
 
   w(`\n${C.bold}sessions uninstall${C.reset}\n\n`);
 
-  const tools = detectTools();
-  for (const tool of tools.filter((t) => t.detected)) {
-    try {
-      if (existsSync(tool.mcpConfigPath)) {
-        const config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
-        if (config.mcpServers?.sessions) {
-          delete config.mcpServers.sessions;
-          writeFileSync(tool.mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
-          w(`  ${C.green}✓${C.reset} Removed MCP config from ${C.dim}${tool.name}${C.reset}\n`);
-        }
-      }
-    } catch {}
+  for (const path of cleanDeadConfigs()) {
+    w(`  ${C.green}✓${C.reset} Removed dead config ${C.dim}${tilde(path)}${C.reset}\n`);
+  }
 
-    if (tool.name === 'Claude Code') {
-      unregisterClaudePlugin();
-      w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
+  for (const client of detectClients().filter((c) => c.detected)) {
+    const result = unconfigureMcp(client);
+    const where = client.id === 'claude' ? 'the plugin' : tilde(client.configPath);
+    if (result.status === 'added') {
+      w(`  ${C.green}✓${C.reset} Removed MCP server from ${C.dim}${where}${C.reset}\n`);
+    } else if (result.status !== 'unchanged') {
+      w(`  ${C.red}✗${C.reset} Left ${where} alone — ${result.reason}\n`);
+    }
 
+    if (client.id === 'claude') {
       const res = disableSessionHook('claude');
       if (res.changed) {
-        w(`  ${C.green}✓${C.reset} Removed SessionStart auto-injection from ${C.dim}${tool.name}${C.reset}\n`);
+        w(`  ${C.green}✓${C.reset} Removed SessionStart auto-injection from ${C.dim}${client.name}${C.reset}\n`);
       }
     }
   }
