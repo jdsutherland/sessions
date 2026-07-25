@@ -1,7 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
 import {
   type Tool,
@@ -28,35 +27,11 @@ import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
 
-// Source/cache locations default to the real home dirs but honor env overrides so
-// tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
-const home = homedir();
-
-// Resolve the sessions cache directory, honoring SESSIONS_CACHE_DIR so tests (and
-// the runtime pricing cache) stay hermetic under the same env override. Exported
-// so the pricing cache lives alongside index.db without hardcoding ~/.cache/sessions.
-export function getCacheDir(): string {
-  return process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
-}
-
-// The index.db path under the cache dir. Exported because the test harness (and
-// Task 10) reference it directly. Resolved lazily — not frozen at import — so a
-// test that mutates SESSIONS_* on the shared module instance is honored.
-export function getDbPath(): string {
-  return join(getCacheDir(), 'index.db');
-}
-
-// Source-session roots, resolved lazily for the same hermetic-test reason. Real
-// runs have a stable env, so production behavior is unchanged by the laziness.
-function getClaudeDir(): string {
-  return process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
-}
-function getPiDir(): string {
-  return process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
-}
-function getCodexDir(): string {
-  return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
-}
+// Source/cache locations live in src/paths.ts — every one honors a SESSIONS_* env
+// override so tests can point the index at hermetic temp fixtures. Re-exported
+// because the pricing cache and the test harness reference them by these names.
+import { getCacheDir, getDbPath, getClaudeDir, getPiDir, getCodexDir } from './paths';
+export { getCacheDir, getDbPath };
 
 // Bump 6 -> 7: search becomes message-granular. A new message_fts table holds one
 // row per message (genuine user turns + assistant turns) carrying the parser's
