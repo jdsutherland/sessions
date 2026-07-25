@@ -39,6 +39,30 @@ export interface SessionMetadata {
 }
 
 /**
+ * Whether a line counts toward the session's conversational message count. This counts
+ * LINES, not messages — a pure tool-use assistant line counts, and extractMessages folds
+ * it away — so it runs ~5x above the indexed message count. That gap is real and
+ * pre-existing; closing it moves the eval baseline and belongs in its own change.
+ * The differential oracle (messageCount) and the one-pass indexer share this predicate
+ * so they cannot drift, which is how Codex ended up counted as zero: its conversation
+ * is wrapped in `response_item`, a shape neither branch below recognizes.
+ */
+function countsAsMessage(d: JsonLine, tool: Tool): boolean {
+  if (tool === 'codex') {
+    if (d.type !== 'response_item') return false;
+    const p = d.payload;
+    // `developer` is the injected system prompt, not a turn.
+    return p?.['type'] === 'message' && (p['role'] === 'user' || p['role'] === 'assistant');
+  }
+  if (isUserMessage(d) || d.type === 'assistant') return true;
+  if (d.type === 'message') {
+    const msg = d.message;
+    return typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant';
+  }
+  return false;
+}
+
+/**
  * Extract the session-level fields needed by the index in one JSON parse pass.
  * These used to be collected by six independent helpers, which made indexing an
  * actively growing (and often multi-megabyte) transcript parse the same JSONL
@@ -91,12 +115,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
       lastDate = date;
     }
 
-    if (isUserMessage(d) || d.type === 'assistant') {
-      count++;
-    } else if (d.type === 'message') {
-      const msg = d.message;
-      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
-    }
+    if (countsAsMessage(d, tool)) count++;
 
     if (tool === 'claude') {
       if (typeof d.gitBranch === 'string' && d.gitBranch) branch = d.gitBranch;
@@ -375,16 +394,11 @@ export function firstTimestamp(lines: string[]): string {
   return '?';
 }
 
-export function messageCount(lines: string[]): number {
+export function messageCount(lines: string[], tool: Tool): number {
   let count = 0;
   for (const line of lines) {
     const d = tryParseJson(line);
-    if (!d) continue;
-    if (isUserMessage(d) || d.type === 'assistant') count++;
-    else if (d.type === 'message') {
-      const msg = d.message;
-      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
-    }
+    if (d && countsAsMessage(d, tool)) count++;
   }
   return count;
 }

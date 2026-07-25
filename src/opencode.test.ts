@@ -142,7 +142,7 @@ describe('opencode module', () => {
     expect(getCwdFromSession(lines, 'opencode')).toBe('/repo/app');
     expect(firstPrompt(lines, 'opencode')).toBe('please refactor the router lazerhawk');
     expect(customTitle(lines)).toBe('Refactor the router');
-    expect(messageCount(lines)).toBe(2); // one user + one assistant
+    expect(messageCount(lines, 'opencode')).toBe(2); // one user + one assistant
   });
 
   test('drops the auto-generated "New session -" placeholder title', () => {

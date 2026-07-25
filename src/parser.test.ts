@@ -47,7 +47,7 @@ describe('extractSessionMetadata', () => {
       customTitle: customTitle(lines),
       date: lastTimestamp(lines),
       createdAt: firstTimestamp(lines),
-      messageCount: messageCount(lines),
+      messageCount: messageCount(lines, 'claude'),
       branch: sessionBranch(lines, 'claude'),
       // No standalone helper to differentiate against: sessionIdFor takes the id, it
       // does not find it. Asserted against the literal the transcript carries.
@@ -55,17 +55,19 @@ describe('extractSessionMetadata', () => {
     });
   });
 
-  test('extracts Codex cwd and starting branch from session_meta', () => {
+  // Envelope shapes here match real rollouts (see src/__fixtures__/codex): everything
+  // conversational is wrapped in `response_item`, and session_meta carries the id.
+  test('extracts Codex cwd, id and starting branch from session_meta', () => {
     const lines = jsonl(
       {
         type: 'session_meta',
         timestamp: '2026-04-01T09:00:00Z',
-        payload: { cwd: '/codex-repo', git: { branch: 'perf/index' } },
+        payload: { id: '019d96ef-74e4-7c80-824a-f3b19b826334', cwd: '/codex-repo', git: { branch: 'perf/index' } },
       },
       {
-        type: 'message',
+        type: 'response_item',
         timestamp: '2026-04-02T09:00:00Z',
-        message: { role: 'assistant', content: [{ type: 'text', text: 'ready' }] },
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ready' }] },
       },
     );
 
@@ -75,6 +77,7 @@ describe('extractSessionMetadata', () => {
       createdAt: '2026-04-01',
       messageCount: 1,
       branch: 'perf/index',
+      sessionId: '019d96ef-74e4-7c80-824a-f3b19b826334',
     });
   });
 
@@ -171,7 +174,7 @@ describe('messageCount', () => {
       { type: 'user', message: { role: 'user', content: 'bye' } },
       { type: 'assistant', message: { content: 'goodbye' } },
     );
-    expect(messageCount(lines)).toBe(4);
+    expect(messageCount(lines, 'claude')).toBe(4);
   });
 
   test('ignores system and other row types', () => {
@@ -181,19 +184,31 @@ describe('messageCount', () => {
       { type: 'custom-title', customTitle: 'test' },
       { type: 'tag', tag: 'v1' },
     );
-    expect(messageCount(lines)).toBe(1);
+    expect(messageCount(lines, 'claude')).toBe(1);
   });
 
-  test('counts pi/codex style message rows', () => {
+  test('counts pi-style message rows', () => {
     const lines = jsonl(
       { type: 'message', message: { role: 'user', content: 'q' } },
       { type: 'message', message: { role: 'assistant', content: 'a' } },
     );
-    expect(messageCount(lines)).toBe(2);
+    expect(messageCount(lines, 'pi')).toBe(2);
+  });
+
+  // Codex wraps its conversation in `response_item`, which is why every indexed Codex
+  // session reported message_count 0 while its branch and files_touched populated.
+  test('counts codex response_item turns, minus the injected developer prompt', () => {
+    const lines = jsonl(
+      { type: 'response_item', payload: { type: 'message', role: 'developer', content: [{ type: 'input_text' }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text' }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text' }] } },
+      { type: 'event_msg', payload: { type: 'agent_message', message: 'a' } },
+    );
+    expect(messageCount(lines, 'codex')).toBe(2);
   });
 
   test('returns 0 for empty lines', () => {
-    expect(messageCount([])).toBe(0);
+    expect(messageCount([], 'claude')).toBe(0);
   });
 });
 

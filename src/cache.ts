@@ -17,7 +17,6 @@ import {
   type MessageHit,
 } from './types';
 import {
-  extractMessages,
   getSessionMessages,
   extractSessionMetadata,
   summarizeMessages,
@@ -31,6 +30,7 @@ import { extractThinking } from './extract-thinking';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
 import { sessionIdFor } from './session-id';
+import { parseSession, toMessages } from './record';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
@@ -83,7 +83,13 @@ function getCodexDir(): string {
 // v11: transport banners no longer reach session_fts.context_text. That one IS a write
 // change — a v10 index holds sessions whose only searchable text is `API Error: …` —
 // and unlike message_fts there is no read-path filter to fall back on, so it rebuilds.
-const SCHEMA_VERSION = 11;
+// v12: messages come from the record (src/record.ts) instead of extractMessages, so Codex
+// finally has any at all — 292 of 292 indexed Codex sessions held 0 message_fts rows, a
+// blank first_prompt and message_count 0. Nothing re-parses on its own: indexFile skips on
+// unchanged mtime/size and Codex rollouts are append-then-frozen, so without a forced
+// rebuild those rows would stay blank forever. session_id also changes for codex and pi
+// (see src/session-id.ts).
+const SCHEMA_VERSION = 12;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -182,7 +188,7 @@ function openDb(): Database {
     )
   `);
   // One row per indexed message. msg_index mirrors the numbering getSessionMessages
-  // assigns (extractMessages is the single authority), so a search hit's index feeds
+  // assigns (parseSession is the single authority), so a search hit's index feeds
   // get_session_messages(offset) directly. Manual sync, same as session_fts: indexFile
   // deletes by file_path then re-inserts; refreshIndex prunes removed files.
   db.run(`
@@ -375,7 +381,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
 
   const sessionId = sessionIdFor(filePath, tool, metadata.sessionId);
-  const messages = extractMessages(lines);
+  const messages = toMessages(parseSession(lines, tool));
   const summary = summarizeMessages(messages);
   const subagentContent = collectSubagentText(filePath, tool);
 
