@@ -1,7 +1,7 @@
 // Sessions-owned (forked from tokenmaxing's parser). Dedupes usage by (message.id, requestId)
 // so the same API response — copied across resumed/forked session files — is counted once, matching ccusage.
 import type { UsageEvent } from './types.ts';
-import { walkJsonl, readJsonlLines } from './util.ts';
+import { readJsonlLines } from './util.ts';
 
 interface ClaudeAssistantLine {
   type: 'assistant';
@@ -26,41 +26,51 @@ function isAssistantLine(v: unknown): v is ClaudeAssistantLine {
   return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'assistant';
 }
 
-export async function parseClaudeCode(root: string): Promise<UsageEvent[]> {
+/** One transcript's events, undeduped — the dedupe spans files, so gatherEvents owns it. */
+export async function parseClaudeCodeFile(path: string): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  // The same API response is rewritten into every resumed/forked session file; dedupe by the
-  // Anthropic message id + requestId (globally across files) so each response is counted once.
-  const seen = new Set<string>();
-  for await (const path of walkJsonl(root)) {
-    for await (const line of readJsonlLines(path)) {
-      if (!isAssistantLine(line)) continue;
-      const u = line.message?.usage;
-      const model = line.message?.model;
-      const ts = line.timestamp;
-      const sid = line.sessionId;
-      if (!u || !model || !ts || !sid) continue;
-      const id = line.message?.id;
-      if (id) {
-        const key = `${id}|${line.requestId ?? ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-      }
-      events.push({
-        tool: 'claude-code',
-        provider: 'anthropic',
-        model,
-        timestamp: ts,
-        sessionId: sid,
-        projectPath: line.cwd,
-        tokens: {
-          input: u.input_tokens ?? 0,
-          output: u.output_tokens ?? 0,
-          cacheRead: u.cache_read_input_tokens ?? 0,
-          cacheWrite: u.cache_creation_input_tokens ?? 0,
-          cacheWrite1h: u.cache_creation?.ephemeral_1h_input_tokens ?? 0,
-        },
-      });
-    }
+  for await (const line of readJsonlLines(path)) {
+    if (!isAssistantLine(line)) continue;
+    const u = line.message?.usage;
+    const model = line.message?.model;
+    const ts = line.timestamp;
+    const sid = line.sessionId;
+    if (!u || !model || !ts || !sid) continue;
+    const event: UsageEvent = {
+      tool: 'claude-code',
+      provider: 'anthropic',
+      model,
+      timestamp: ts,
+      sessionId: sid,
+      projectPath: line.cwd,
+      tokens: {
+        input: u.input_tokens ?? 0,
+        output: u.output_tokens ?? 0,
+        cacheRead: u.cache_read_input_tokens ?? 0,
+        cacheWrite: u.cache_creation_input_tokens ?? 0,
+        cacheWrite1h: u.cache_creation?.ephemeral_1h_input_tokens ?? 0,
+      },
+    };
+    const id = line.message?.id;
+    // No id means no identity to dedupe by: the line is counted as its own response.
+    if (id) event.dedupeKey = `${id}|${line.requestId ?? ''}`;
+    events.push(event);
   }
   return events;
+}
+
+/**
+ * Drop repeats of an API response the harness rewrote into another session file.
+ * Global across files by necessity — resuming or forking a session copies every prior
+ * assistant line into the new transcript — which is why it cannot live in a per-file
+ * parse, and why the per-file event cache stores events with their dedupeKey intact.
+ */
+export function dedupeClaude(events: UsageEvent[]): UsageEvent[] {
+  const seen = new Set<string>();
+  return events.filter((e) => {
+    if (!e.dedupeKey) return true;
+    if (seen.has(e.dedupeKey)) return false;
+    seen.add(e.dedupeKey);
+    return true;
+  });
 }

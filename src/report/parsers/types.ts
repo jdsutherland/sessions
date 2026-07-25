@@ -18,4 +18,7 @@ export interface UsageEvent {
     cacheWrite1h?: number; // subset of cacheWrite written to the 1h cache (billed at input×2)
   };
   costUSD?: number; // only set when source pre-computes (Pi); otherwise computed downstream
+  /** Claude only: the (message.id, requestId) identity gatherEvents dedupes on across
+   *  files. Absent when the line carried no message id — nothing to dedupe it by. */
+  dedupeKey?: string;
 }

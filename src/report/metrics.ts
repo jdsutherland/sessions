@@ -1,7 +1,7 @@
 import type { SessionMetrics, Tool } from '../types.ts';
 import type { ToolId } from './types.ts';
 import { aggregate } from './aggregate.ts';
-import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
+import { gatherEvents, defaultRoots, mtimeFloor, type ReportRoots } from './extract.ts';
 import { localDate } from './parsers/util.ts';
 import { defaultTz } from './period.ts';
 import { resolveProject } from './project.ts';
@@ -40,7 +40,9 @@ export async function getSessionMetrics(
   const tz = opts.tz ?? defaultTz();
   const now = opts.now ?? new Date().toISOString();
   const tools = toolFilter ? new Set<ToolId>([TOOL_ID[toolFilter]]) : undefined;
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
+  // The window is the point of this tool, so it prunes before parsing: a transcript last
+  // written before startDate cannot hold an event inside the range.
+  const events = await gatherEvents(opts.roots ?? defaultRoots(), { tools, since: mtimeFloor(startDate) });
 
   // Same scoping rule as `report --here`: match on the resolved project name, so a
   // cwd the resolver cannot name ('unknown') drops out of a project-scoped call.

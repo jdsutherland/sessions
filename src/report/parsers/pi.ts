@@ -1,6 +1,8 @@
-// VENDORED VERBATIM from tokenmaxing/src/parsers/pi.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
+// Sessions-owned (forked from tokenmaxing's parser). The logic is upstream's, verbatim; only
+// the entry point diverges — it parses one transcript instead of walking a root, so the
+// extractor can prune by mtime and cache a file's events the way it does for every other tool.
 import type { UsageEvent } from './types.ts';
-import { walkJsonl, readJsonlLines } from './util.ts';
+import { readJsonlLines } from './util.ts';
 
 interface PiSessionLine {
   type: 'session';
@@ -31,39 +33,37 @@ function isMessage(v: unknown): v is PiMessageLine {
   return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'message';
 }
 
-export async function parsePi(root: string): Promise<UsageEvent[]> {
+export async function parsePiFile(path: string): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  for await (const path of walkJsonl(root)) {
-    let session: PiSessionLine | null = null;
-    for await (const line of readJsonlLines(path)) {
-      if (isSession(line)) {
-        session = line;
-        continue;
-      }
-      if (!isMessage(line)) continue;
-      if (line.message?.role !== 'assistant') continue;
-      // Pi moved provider/model/usage from the top level into `message`.
-      // Prefer the nested location; fall back to legacy top-level fields.
-      const provider = line.message?.provider ?? line.provider;
-      const model = line.message?.model ?? line.model;
-      const usage = line.message?.usage ?? line.usage;
-      if (!usage || !provider || !model || !session) continue;
-      events.push({
-        tool: 'pi',
-        provider,
-        model,
-        timestamp: line.timestamp,
-        sessionId: session.id,
-        projectPath: session.cwd,
-        tokens: {
-          input: usage.input ?? 0,
-          output: usage.output ?? 0,
-          cacheRead: usage.cacheRead ?? 0,
-          cacheWrite: usage.cacheWrite ?? 0,
-        },
-        costUSD: usage.cost?.total,
-      });
+  let session: PiSessionLine | null = null;
+  for await (const line of readJsonlLines(path)) {
+    if (isSession(line)) {
+      session = line;
+      continue;
     }
+    if (!isMessage(line)) continue;
+    if (line.message?.role !== 'assistant') continue;
+    // Pi moved provider/model/usage from the top level into `message`.
+    // Prefer the nested location; fall back to legacy top-level fields.
+    const provider = line.message?.provider ?? line.provider;
+    const model = line.message?.model ?? line.model;
+    const usage = line.message?.usage ?? line.usage;
+    if (!usage || !provider || !model || !session) continue;
+    events.push({
+      tool: 'pi',
+      provider,
+      model,
+      timestamp: line.timestamp,
+      sessionId: session.id,
+      projectPath: session.cwd,
+      tokens: {
+        input: usage.input ?? 0,
+        output: usage.output ?? 0,
+        cacheRead: usage.cacheRead ?? 0,
+        cacheWrite: usage.cacheWrite ?? 0,
+      },
+      costUSD: usage.cost?.total,
+    });
   }
   return events;
 }

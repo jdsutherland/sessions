@@ -2,7 +2,7 @@ import { writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolId } from './types.ts';
-import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
+import { gatherEvents, defaultRoots, mtimeFloor, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
@@ -130,7 +130,6 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const now = opts.now ?? new Date().toISOString();
   const tz = opts.tz;
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
 
   const todayLocal = localDate(now, tz);
   // Precedence: a named preset wins, then --days, then explicit --from/--to.
@@ -141,6 +140,13 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   } else if (opts.days) {
     from = daysAgo(todayLocal, opts.days);
   }
+
+  // Resolved before the scan, not after, so a bounded window prunes the corpus by mtime
+  // instead of parsing every transcript ever written and discarding most of them.
+  const events = await gatherEvents(opts.roots ?? defaultRoots(), {
+    tools,
+    since: from ? mtimeFloor(from) : undefined,
+  });
   // Project scoping matches by resolved name on both sides, so events whose
   // cwd lacks a known project ('unknown') drop out of a --here report.
   const hereProject = opts.here ? resolveProject(opts.cwd ?? process.cwd()) : undefined;

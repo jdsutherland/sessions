@@ -2,8 +2,16 @@ import { describe, test, expect, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseClaudeCode } from './parsers/claude-code.ts';
-import { parseCodex } from './parsers/codex.ts';
+import { parseClaudeCodeFile } from './parsers/claude-code.ts';
+import { parseCodexFile } from './parsers/codex.ts';
+import { gatherEvents } from './extract.ts';
+
+/** The dedupe spans files, so it lives in gatherEvents — assert it where it runs. */
+const claudeEvents = (root: string) =>
+  gatherEvents(
+    { claudeCode: root, pi: join(root, 'no-pi'), codex: join(root, 'no-codex') },
+    { tools: new Set(['claude-code']) },
+  );
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-parsers-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -30,14 +38,14 @@ function claudeLine(opts: { id?: string; requestId?: string; input?: number }): 
   return JSON.stringify(line) + '\n';
 }
 
-describe('parseClaudeCode dedup', () => {
+describe('the cross-file claude dedupe', () => {
   test('dedupes identical (message.id, requestId) across files', async () => {
     const root = join(tmp, 'claude-dup');
     mkdirSync(join(root, 'proj'), { recursive: true });
     // Same API response copied into two session files (resume/fork scenario).
     writeFileSync(join(root, 'proj', 'a.jsonl'), claudeLine({ id: 'msg_1', requestId: 'req_1' }));
     writeFileSync(join(root, 'proj', 'b.jsonl'), claudeLine({ id: 'msg_1', requestId: 'req_1' }));
-    const events = await parseClaudeCode(root);
+    const events = await claudeEvents(root);
     expect(events.length).toBe(1);
   });
 
@@ -48,7 +56,7 @@ describe('parseClaudeCode dedup', () => {
       join(root, 'a.jsonl'),
       claudeLine({ id: 'msg_1', requestId: 'req_1' }) + claudeLine({ id: 'msg_2', requestId: 'req_1' }),
     );
-    const events = await parseClaudeCode(root);
+    const events = await claudeEvents(root);
     expect(events.length).toBe(2);
   });
 
@@ -56,12 +64,12 @@ describe('parseClaudeCode dedup', () => {
     const root = join(tmp, 'claude-noid');
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, 'a.jsonl'), claudeLine({}) + claudeLine({}));
-    const events = await parseClaudeCode(root);
+    const events = await claudeEvents(root);
     expect(events.length).toBe(2);
   });
 });
 
-describe('parseClaudeCode 1h cache split', () => {
+describe('parseClaudeCodeFile 1h cache split', () => {
   test('extracts ephemeral_1h_input_tokens as cacheWrite1h (cacheWrite stays total)', async () => {
     const root = join(tmp, 'claude-1h');
     mkdirSync(root, { recursive: true });
@@ -85,7 +93,7 @@ describe('parseClaudeCode 1h cache split', () => {
         },
       }) + '\n';
     writeFileSync(join(root, 'a.jsonl'), line);
-    const events = await parseClaudeCode(root);
+    const events = await parseClaudeCodeFile(join(root, 'a.jsonl'));
     expect(events[0]!.tokens.cacheWrite).toBe(1000);
     expect(events[0]!.tokens.cacheWrite1h).toBe(700);
   });
@@ -106,7 +114,7 @@ function codexLines(usage: Record<string, number>): string {
   );
 }
 
-describe('parseCodex accounting', () => {
+describe('parseCodexFile accounting', () => {
   test('excludes cached tokens from input (input_tokens is cache-inclusive)', async () => {
     const root = join(tmp, 'codex-input');
     mkdirSync(root, { recursive: true });
@@ -114,7 +122,7 @@ describe('parseCodex accounting', () => {
       join(root, 'a.jsonl'),
       codexLines({ input_tokens: 1000, output_tokens: 100, reasoning_output_tokens: 30, cached_input_tokens: 600 }),
     );
-    const events = await parseCodex(root);
+    const events = await parseCodexFile(join(root, 'a.jsonl'));
     expect(events.length).toBe(1);
     expect(events[0]!.tokens.input).toBe(400); // 1000 - 600 cached
     expect(events[0]!.tokens.cacheRead).toBe(600);
@@ -127,7 +135,7 @@ describe('parseCodex accounting', () => {
       join(root, 'a.jsonl'),
       codexLines({ input_tokens: 1000, output_tokens: 100, reasoning_output_tokens: 30, cached_input_tokens: 0 }),
     );
-    const events = await parseCodex(root);
+    const events = await parseCodexFile(join(root, 'a.jsonl'));
     expect(events[0]!.tokens.output).toBe(100); // not 130
   });
 });

@@ -8,7 +8,7 @@ import { writeFile, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolId } from '../report/types.ts';
-import { gatherEvents, defaultRoots, type ReportRoots } from '../report/extract.ts';
+import { gatherEvents, defaultRoots, mtimeFloor, type ReportRoots } from '../report/extract.ts';
 import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
@@ -179,7 +179,8 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
 
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
   const roots = opts.roots ?? defaultRoots();
-  const events = await gatherEvents(roots, tools);
+  // A year is still a window: transcripts last written before it opened hold nothing in it.
+  const events = await gatherEvents(roots, { tools, since: mtimeFloor(from) });
   // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
   // projects) is computed from the SAME events as `sessions report` so the two
   // reconcile exactly — automated eval/tmp runs cost real money and belong in the
