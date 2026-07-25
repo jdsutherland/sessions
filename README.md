@@ -17,7 +17,7 @@ Every AI coding session leaves a transcript behind. Claude Code buries them in `
 `sessions` builds a full-text search index over all of it and makes that history useful in three ways:
 
 - **Search & resume (CLI)** — fuzzy-find any past session across all four tools, ranked by relevance, and jump back in.
-- **Agent memory (MCP)** — agents search your history, pull a repo-scoped context primer when you return to a codebase, and answer "what did I do last week?" via bundled skills.
+- **Agent memory (MCP)** — agents search your history, pull a repo-scoped context primer when you return to a codebase, and answer "what did I do last week?" via bundled skills. They can also save a lesson worth keeping, which comes back at the top of the next primer.
 - **Usage reports** — a token/cost dashboard across tools, models, and projects.
 
 ## Install
@@ -98,6 +98,7 @@ sessions --tool claude       # Filter to Claude Code sessions only
 sessions --errored           # Only sessions that hit an error
 sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
+sessions lessons             # Lessons saved for the current repo
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions export <session>    # Print a session as a trajectory-v1 document
 sessions report              # Usage report (HTML dashboard, opens in browser)
@@ -105,23 +106,24 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 
 ### Options
 
-| Flag / Command     | Description                                                                                                                                                          |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                         |
-| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id |
-| `export`           | Print sessions as trajectory-v1 JSONL (see [Exporting trajectories](#exporting-trajectories))                                                                        |
-| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                        |
-| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                             |
-| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
-| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                    |
-| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                               |
-| `--errored`        | Only show sessions that hit an error                                                                                                                                 |
-| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                              |
-| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                             |
-| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                       |
-| `--no-color`       | Disable colored output                                                                                                                                               |
-| `-h`, `--help`     | Show help                                                                                                                                                            |
+| Flag / Command     | Description                                                                                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                             |
+| `lessons`          | Lessons saved for this repo (see [Lessons](#lessons)). `review` resolves conflicts, `export` writes them out, `audit` traces deferred provenance, `retire <id>` takes one out of service |
+| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                     |
+| `export`           | Print sessions as trajectory-v1 JSONL (see [Exporting trajectories](#exporting-trajectories))                                                                                            |
+| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                            |
+| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                 |
+| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools. Saved lessons are kept; `--purge-lessons --yes` deletes them too                                                    |
+| `cleanup`          | Full reset: uninstall plugin + clear search index. Keeps saved lessons — they are not re-derivable from transcripts                                                                      |
+| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                                    |
+| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                   |
+| `--errored`        | Only show sessions that hit an error                                                                                                                                                     |
+| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                  |
+| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                                                 |
+| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                                           |
+| `--no-color`       | Disable colored output                                                                                                                                                                   |
+| `-h`, `--help`     | Show help                                                                                                                                                                                |
 
 ### Browsing
 
@@ -178,7 +180,7 @@ For Claude Code sessions, the command includes `--resume <session-id>`; for Open
 
 ### MCP tools
 
-The MCP server exposes seven tools:
+The MCP server exposes eight tools:
 
 | Tool                   | Description                                                                                                                                                                                                                                                                               |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -188,7 +190,8 @@ The MCP server exposes seven tools:
 | `get_session_digest`   | The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with its exchange's final assistant reply. Long sessions elide middle exchanges, never the ends                                                                                              |
 | `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                                             |
 | `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours by local hour (same pipeline and `$TIMEZONE` bucketing as `sessions report`)                                                                                                                         |
-| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                              |
+| `get_context_primer`   | Repo-scoped primer for re-injecting prior work: saved lessons for the repo, recent sessions in detail, older headlines. `lessonsFlagged` counts lessons withheld because they contradict each other                                                                                       |
+| `remember_lesson`      | Save one durable lesson — a transferable sentence plus the specifics behind it — so the next session doesn't re-derive it. Bounded, deduplicated, and quarantined when it conflicts with an existing lesson. Takes no session id: provenance is resolved from the client, never asked for |
 
 Together these support the recall flow the bundled skills teach: `search_sessions` (ranked) or `grep_sessions` (exhaustive) localizes the hit to a message, the digest gives a session's whole arc in one call, and targeted message reads expand only the exchanges that matter — no paging full transcripts.
 
@@ -229,6 +232,37 @@ Run without `--hooks` and `setup` will ask interactively (when on a TTY); it is 
 To turn it off, run `sessions uninstall` (which also removes the plugin and MCP config). The hook lives in `~/.claude/settings.json` under `hooks.SessionStart`; enabling and disabling preserve any other hooks you have configured.
 
 > Codex and Cursor are not yet supported — their session-start hook contracts are still being confirmed. The hook also requires `sessions` to be on your `PATH` at session start.
+
+The hook also drops a small handoff file recording the session id and transcript path it was handed, which is what lets a lesson saved later in that session name the conversation it came from. See below.
+
+### Lessons
+
+Sessions are a record of what happened. A **lesson** is an assertion someone chose to keep — a root cause that took real work to find, a convention you were corrected on, an approach that looked right and wasn't. Agents save them with the `remember_lesson` MCP tool, and they come back at the top of the context primer, so the next session starts from the conclusion instead of re-deriving it.
+
+They live in their own database at `~/.local/share/sessions/memory.db` — deliberately **not** in the search index. Everything under `~/.cache/sessions` is a rebuildable projection of your transcripts and gets dropped on a schema bump, a `--clear-cache`, or corruption. Nothing regenerates a lesson, so `--clear-cache`, `sessions cleanup`, and `sessions uninstall` all leave it alone; uninstall prints where it is and how to export it. Only `sessions uninstall --purge-lessons --yes` deletes it.
+
+```bash
+sessions lessons                 # lessons in scope for this repo (plus global ones)
+sessions lessons --all           # every lesson, every repo
+sessions lessons review          # resolve lessons that contradict each other
+sessions lessons export          # the whole store as JSON (--out writes a file)
+sessions lessons audit           # trace deferred provenance back to a session
+sessions lessons retire <id>     # take one out of service (marked, never deleted)
+```
+
+**Keeping it from becoming a junk drawer.** Lessons are bounded at write — 280 characters for the lesson, 600 for the detail — and over-length input is rejected with an instruction to compress rather than silently truncated. Re-saving the same lesson bumps a timestamp and inserts nothing. A lesson that substantially overlaps an existing one puts _both_ rows into `needs_review`: neither is served until you pick, because quarantining only the newcomer would keep serving the possibly-stale incumbent while the correction sat invisible. The primer shows the pressure — `+N more` when it caps, and the count of anything flagged.
+
+**Provenance.** Every lesson records how its source session was established, and the agent is never asked for it — a tool field for a session id creates pressure to fill it, and a well-formed-but-wrong uuid is undetectable. The server resolves it from what the client already sends, first match winning:
+
+|     | signal                                                                                | recorded as |
+| --- | ------------------------------------------------------------------------------------- | ----------- |
+| 1   | Codex states its session id in the tool call's `_meta`                                | `meta`      |
+| 2   | the SessionStart hook's handoff file, transcript confirmed on disk                    | `hook`      |
+| 3   | `$CLAUDE_CODE_SESSION_ID`, **only if** a transcript by that name exists               | `env`       |
+| 4   | no session id, but the `tool_use` id — which `sessions lessons audit` can trace later | `deferred`  |
+| 5   | nothing identifying reached the server                                                | `none`      |
+
+Step 3's existence check matters: `claude -c` starts MCP servers with a pre-resume session id and then adopts the resumed session's, so the inherited value can name a session that never existed. Rather than record an id that may later be minted for an unrelated conversation, it falls through to `deferred`. A lesson whose provenance could not be established is still saved and still served — marked, not hidden, and never given a source it doesn't have.
 
 ## Exporting trajectories
 
@@ -353,6 +387,8 @@ To clear the index and force a full rebuild:
 ```sh
 sessions --clear-cache
 ```
+
+Everything under `~/.cache/sessions` is disposable by design — it is a projection of the transcripts, and a schema change simply drops and rebuilds it. Saved [lessons](#lessons) are the one thing that isn't re-derivable, which is why they live in a separate database (`~/.local/share/sessions/memory.db`) that no cache path can reach: it migrates in place instead of being dropped, and a file it can't read is renamed aside rather than deleted.
 
 ### Scoping with `--here`
 
