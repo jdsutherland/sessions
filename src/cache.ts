@@ -30,6 +30,7 @@ import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
+import { sessionIdFor } from './session-id';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
@@ -373,7 +374,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   if (!metadata.cwd) return ignore();
   if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
 
-  const sessionId = basename(filePath).replace('.jsonl', '');
+  const sessionId = sessionIdFor(filePath, tool, metadata.sessionId);
   const messages = extractMessages(lines);
   const summary = summarizeMessages(messages);
   const subagentContent = collectSubagentText(filePath, tool);

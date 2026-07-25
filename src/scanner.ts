@@ -1,9 +1,10 @@
 import { readdir } from 'node:fs/promises';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { type Tool, type SessionResult } from './types';
 import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches, findMatchContext } from './parser';
+import { sessionIdFor } from './session-id';
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
@@ -37,7 +38,7 @@ async function processSession(
   if (cwd.includes('.claude/worktrees') || cwd.includes('/.bare')) return null;
 
   const metadata = extractSessionMetadata(lines, tool);
-  const sessionId = basename(filePath).replace('.jsonl', '');
+  const sessionId = sessionIdFor(filePath, tool, metadata.sessionId);
 
   if (searchQuery) {
     if (!contentMatches(lines, searchQuery)) return null;

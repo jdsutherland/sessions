@@ -2,6 +2,7 @@
 // output_tokens already include reasoning; correct both so totals reflect actual billing (and match ccusage).
 import type { UsageEvent } from './types.ts';
 import { walkJsonl, readJsonlLines } from './util.ts';
+import { sessionIdFor } from '../../session-id.ts';
 
 interface CodexEnvelope {
   timestamp: string;
@@ -48,7 +49,11 @@ export async function parseCodex(root: string): Promise<UsageEvent[]> {
       const payload = line.payload;
       if (line.type === 'session_meta') {
         if (isObject(payload) && typeof payload['id'] === 'string') {
-          meta = { id: payload['id'], cwd: typeof payload['cwd'] === 'string' ? payload['cwd'] : undefined };
+          // Same id the index stores, from the same function — the two used to disagree.
+          meta = {
+            id: sessionIdFor(path, 'codex', payload['id']),
+            cwd: typeof payload['cwd'] === 'string' ? payload['cwd'] : undefined,
+          };
         }
         continue;
       }

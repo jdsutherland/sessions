@@ -34,6 +34,8 @@ export interface SessionMetadata {
   createdAt: string;
   messageCount: number;
   branch: string;
+  /** The id the transcript states about itself, or '' — feed it to sessionIdFor. */
+  sessionId: string;
 }
 
 /**
@@ -49,6 +51,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
   let lastDate = '?';
   let count = 0;
   let branch = '';
+  let sessionId = '';
 
   for (const line of lines) {
     const d = tryParseJson(line);
@@ -62,6 +65,21 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
       } else if (tool === 'codex' && d.type === 'session_meta') {
         const value = (d.payload as Record<string, unknown> | undefined)?.cwd;
         if (typeof value === 'string' && value) cwd = value;
+      }
+    }
+
+    // Where each harness writes its own id. Claude repeats it on every line; Codex
+    // and Pi state it once, in the session header. OpenCode's synthesized lines carry
+    // none — its id is the synthetic path's basename.
+    if (!sessionId) {
+      if (tool === 'claude' && typeof d.sessionId === 'string' && d.sessionId) {
+        sessionId = d.sessionId;
+      } else if (tool === 'pi' && d.type === 'session') {
+        const value = (d as Record<string, unknown>)['id'];
+        if (typeof value === 'string' && value) sessionId = value;
+      } else if (tool === 'codex' && d.type === 'session_meta') {
+        const value = (d.payload as Record<string, unknown> | undefined)?.['id'];
+        if (typeof value === 'string' && value) sessionId = value;
       }
     }
 
@@ -88,7 +106,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     }
   }
 
-  return { cwd, customTitle: title, date: lastDate, createdAt: firstDate, messageCount: count, branch };
+  return { cwd, customTitle: title, date: lastDate, createdAt: firstDate, messageCount: count, branch, sessionId };
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {

@@ -26,6 +26,7 @@ describe('extractSessionMetadata', () => {
       {
         type: 'user',
         cwd: '/repo',
+        sessionId: '3f6b1c2a-session',
         timestamp: '2026-03-15T10:00:00Z',
         gitBranch: 'main',
         message: { content: 'hello' },
@@ -48,6 +49,9 @@ describe('extractSessionMetadata', () => {
       createdAt: firstTimestamp(lines),
       messageCount: messageCount(lines),
       branch: sessionBranch(lines, 'claude'),
+      // No standalone helper to differentiate against: sessionIdFor takes the id, it
+      // does not find it. Asserted against the literal the transcript carries.
+      sessionId: '3f6b1c2a-session',
     });
   });
 
