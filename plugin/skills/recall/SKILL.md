@@ -42,6 +42,12 @@ Recall past work on a specific project or topic.
 
    **Overall arc:** How the work evolved across sessions.
 
+## Closing the loop
+
+Recall exists because something was learned once and then lost. When the work this recall feeds turns up something the next session would otherwise re-derive — a root cause that took real effort to find, a convention the user corrected you on, an approach that looked right and wasn't — call `remember_lesson` before you finish. One transferable sentence, with the file/root cause/fix in `detail`.
+
+Do not save what the code or git history already states, what you just did, or task status. Those are the entries nobody re-reads, and they are what turns this into a junk drawer.
+
 ## Guidelines
 
 - A lesson with `verified: false` cannot be traced back to the conversation that produced it — still usable, but say so if the user leans on it. `lessonsFlagged > 0` means lessons contradict each other and are being withheld; report the count rather than picking a side.

@@ -360,7 +360,7 @@ export function runRememberLesson(
 
 server.tool(
   'remember_lesson',
-  'Save one durable lesson from this session so the next one does not re-derive it. Call it when something was learned the hard way: a root cause that took real work to find, a convention or preference the user corrected you on, an approach that looked right and was not. Do NOT call it for what the code or git history already says, for task state, or to recap what you just did — those are not lessons and they are what turns this into a junk drawer. Write `lesson` as one transferable sentence useful to someone who was not here, and put the file, root cause, and fix in `detail`; over-length input is rejected rather than truncated, so compress instead of trimming. Do not try to pass a session id — the server resolves provenance from the client itself, and anything you supplied would be a guess. Re-saving the same lesson is free and inserts nothing. If it overlaps an existing lesson, BOTH are flagged and neither is served until a human resolves it — when that comes back, raise the conflict with the user instead of rewording and saving again.',
+  'Save one durable lesson from this session so the next one does not re-derive it. Call it when something was learned the hard way: a root cause that took real work to find, a convention or preference the user corrected you on, an approach that looked right and was not. Do NOT call it for what the code or git history already says, for task state, or to recap what you just did — those are not lessons and they are what turns this into a junk drawer. Write `lesson` as one transferable sentence useful to someone who was not here, and put the file, root cause, and fix in `detail`; over-length input is rejected rather than truncated, so compress instead of trimming. Do not try to pass a session id — the server resolves provenance from the client itself, and anything you supplied would be a guess. Re-saving the same lesson is free and inserts nothing. If it overlaps an existing lesson, BOTH are flagged and neither is served until a human resolves it — when that comes back, raise the conflict with the user rather than rewording and saving again: a rewording joins the same review group instead of going live, and a rewording of a retired lesson is withheld too.',
   {
     lesson: z.string().min(1).describe(`The transferable principle, one sentence, max ${LESSON_MAX_CHARS} chars.`),
     detail: z.string().optional().describe(`The specifics: file, root cause, fix. Max ${DETAIL_MAX_CHARS} chars.`),
@@ -374,7 +374,9 @@ server.tool(
       .number()
       .int()
       .optional()
-      .describe('Id of a lesson this corrects. The old one is marked superseded, never edited or deleted.'),
+      .describe(
+        'Id of a lesson this corrects. The old one is marked superseded, never edited or deleted — and only when the two texts actually overlap; an id that names something unrelated sends this to human review rather than retiring it.',
+      ),
     cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
   },
   async ({ lesson, detail, scope, files, supersedes, cwd }, extra) =>

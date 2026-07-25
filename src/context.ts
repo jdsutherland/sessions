@@ -321,9 +321,11 @@ async function runContextHook(args: ContextArgs): Promise<void> {
 
     // Never widen detail in hook mode — keep the injected block small.
     process.stdout.write(renderMarkdown(primer, false, LESSONS_MAX_CHARS_HOOK));
-    // Standing pointer for the agent: the primer is a snapshot, not the archive.
+    // Standing pointer for the agent: the primer is a snapshot, not the archive — and
+    // the store is written, not only read. Nothing else fires at the moment something
+    // is learned, so the one sentence that says "save it" has to ride along here.
     process.stdout.write(
-      '\n> This is a snapshot of recent sessions on this repo. Full history across all past sessions is searchable — use the sessions MCP tools (search_sessions, get_session_digest, get_context_primer) when prior work, decisions, or dead ends are referenced.\n',
+      '\n> This is a snapshot of recent sessions on this repo. Full history across all past sessions is searchable — use the sessions MCP tools (search_sessions, get_session_digest, get_context_primer) when prior work, decisions, or dead ends are referenced. When this session turns up something the next one would otherwise re-derive — a root cause that took real work, a correction from the user, an approach that looked right and was not — call remember_lesson before you finish.\n',
     );
   } catch {
     // Any failure at session start degrades to injecting nothing.

@@ -718,4 +718,38 @@ describe('the SessionStart hook stays inside its budget', () => {
     expect(handoff?.source).toBe('resume');
     delete process.env.SESSIONS_HANDOFF_DIR;
   }, 15000);
+
+  /**
+   * The standing pointer is the only thing that fires at the moment something is
+   * learned. Everything else — the server instructions, the context skill — fires at
+   * session start or on "catch me up", which is the wrong end of the session.
+   */
+  test('the standing pointer names the write tool, not only the read ones', async () => {
+    const repo = join(fixtureRoot, 'hook-pointer');
+    mkdirSync(repo, { recursive: true });
+    Bun.spawnSync(['git', 'init', '-q', repo]);
+    writeClaudeSession({ cwd: realpathSync(repo), firstPrompt: 'something worth priming' });
+
+    const proc = Bun.spawn(['bun', 'run', join(repoRoot, 'index.ts'), 'context', '--hook'], {
+      cwd: repo,
+      stdin: new TextEncoder().encode('{}'),
+      stdout: 'pipe',
+      stderr: 'ignore',
+      env: {
+        ...process.env,
+        SESSIONS_CLAUDE_DIR: claudeDir,
+        SESSIONS_PI_DIR: piDir,
+        SESSIONS_CODEX_DIR: codexDir,
+        SESSIONS_CACHE_DIR: cacheDir,
+        SESSIONS_MEMORY_DB: memoryDb,
+        SESSIONS_OPENCODE_DB: opencodeDb,
+        SESSIONS_HANDOFF_DIR: join(fixtureRoot, 'handoff-pointer'),
+      },
+    });
+
+    expect(await proc.exited).toBe(0);
+    const out = await new Response(proc.stdout).text();
+    expect(out).toContain('search_sessions');
+    expect(out).toContain('remember_lesson');
+  }, 15000);
 });
