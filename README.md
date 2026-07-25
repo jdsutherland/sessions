@@ -59,8 +59,8 @@ sessions setup
 This automatically:
 
 1. Copies the plugin and skills to `~/.local/share/sessions/plugin/`
-2. Detects which AI tools you have installed (Claude Code, Cursor, Codex)
-3. Adds the MCP server config to each tool
+2. Detects which AI tools you have installed (Claude Code, Cursor, Codex, Pi)
+3. Wires the MCP server into the config each one actually reads
 4. Registers the plugin so skills are discoverable
 
 ```
@@ -68,11 +68,12 @@ This automatically:
 
 sessions setup
 
-  ✓ Plugin installed to ~/.local/share/sessions/plugin/
-  ✓ MCP server added to Claude Code
-  ✓ Plugin registered with Claude Code
-  ✓ MCP server added to Cursor
-  ✓ Plugin registered with Cursor
+  ✓ Plugin installed to ~/.local/share/sessions/plugin
+
+  ✓ Claude Code plugin registered (the MCP server ships with it)
+  ✓ Cursor      MCP server written to ~/.cursor/mcp.json
+  ✓ Codex       MCP server merged into ~/.codex/config.toml
+  ✓ Pi          MCP server written to ~/.pi/agent/mcp.json
 
   Skills available:
     /context           Context primer for the current repo
@@ -83,6 +84,12 @@ sessions setup
 
   Run `sessions setup` again after upgrading to update skills.
 ```
+
+Each client is reported by what actually happened to it. A client that was detected
+but not configured says so, with the exact step to do it by hand — setup never claims
+a client it could not wire. The Codex merge preserves the rest of `config.toml`,
+backs it up to `config.toml.sessions-bak` before its first edit, and refuses to touch
+a file whose shape it can't edit safely rather than risk corrupting it.
 
 After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
 
@@ -165,17 +172,44 @@ For Claude Code sessions, the command includes `--resume <session-id>`; for Open
 
 ## Agent memory
 
-`sessions` includes an [MCP](https://modelcontextprotocol.io/) server that gives AI agents searchable access to your past conversations — across every tool, not just the one they're running in. `sessions setup` configures it automatically; for manual setup, add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
+`sessions` includes an [MCP](https://modelcontextprotocol.io/) server that gives AI agents searchable access to your past conversations — across every tool, not just the one they're running in. That reach is the point: Codex and Pi cannot read `CLAUDE.md`, so the MCP server is the only way work recorded in one harness shows up in another.
+
+`sessions setup` configures it automatically. Each client reads a different file, so there is no single path that works everywhere:
+
+| Client      | Config it reads        | Notes                                                            |
+| ----------- | ---------------------- | ---------------------------------------------------------------- |
+| Claude Code | the installed plugin   | The plugin ships the server; no separate MCP config file is used |
+| Cursor      | `~/.cursor/mcp.json`   | Note: no leading dot                                             |
+| Codex       | `~/.codex/config.toml` | TOML, under `[mcp_servers.sessions]`                             |
+| Pi          | `~/.pi/agent/mcp.json` | Wants an explicit `"type": "stdio"`                              |
+
+For manual setup, Cursor and Pi take JSON (drop the `type` for Cursor):
 
 ```json
 {
   "mcpServers": {
     "sessions": {
+      "type": "stdio",
       "command": "sessions",
       "args": ["--mcp"]
     }
   }
 }
+```
+
+Codex takes TOML — add this to `~/.codex/config.toml`, alongside any `[mcp_servers.*]` entries already there:
+
+```toml
+[mcp_servers.sessions]
+command = "sessions"
+args = ["--mcp"]
+```
+
+And Claude Code takes the plugin:
+
+```sh
+claude plugins marketplace add ~/.local/share/sessions
+claude plugins install sessions@sessions
 ```
 
 ### MCP tools
