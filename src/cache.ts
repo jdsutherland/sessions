@@ -64,7 +64,10 @@ function getCodexDir(): string {
 // v8: message_fts no longer stores compaction summaries or tag-wrapped agent/
 // harness injections (task-notifications, `!`-mode shell echoes, teammate relays)
 // as genuine user turns — see isGenuineUserTurn/stripInjected in parser.ts.
-const SCHEMA_VERSION = 8;
+// v9: extractCommands clips each command to MAX_COMMAND_LEN on the way in, so the
+// stored `commands` column (and its FTS copy) needs a rebuild to shed the 9KB
+// one-liners v8 indexed verbatim.
+const SCHEMA_VERSION = 9;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;

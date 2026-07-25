@@ -46,12 +46,12 @@ export async function runSearchSessions(args: {
   }
 
   const formatted = results.map(formatResult);
-  return { content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }] };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(formatted) }] };
 }
 
 server.tool(
   'search_sessions',
-  'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+  'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, a bounded sample of the files/commands involved (filesTotal/commandsTotal carry the uncapped counts; commands are clipped to their first line), an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
   {
     query: z
       .string()
@@ -124,7 +124,7 @@ export async function runGrepSessions(args: {
       resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
     })),
   };
-  return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
 server.tool(
@@ -190,7 +190,7 @@ export async function runGetSessionMessages(args: {
   };
 
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    content: [{ type: 'text' as const, text: JSON.stringify(result) }],
   };
 }
 
@@ -226,7 +226,7 @@ export async function runGetSessionDigest(args: {
   }
 
   const digest = buildSessionDigest(lines);
-  return { content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }] };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
 }
 
 server.tool(
@@ -262,7 +262,7 @@ server.tool(
     }
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(digest) }],
     };
   },
 );
@@ -284,7 +284,7 @@ server.tool(
     }
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(metrics, null, 2) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(metrics) }],
     };
   },
 );
@@ -307,7 +307,7 @@ server.tool(
     if (!repo) return { content: [{ type: 'text' as const, text: 'Not inside a git repository.' }] };
     const primer = await getContextPrimer(repo, { limit, days, tool: tool ?? '', worktreeOnly: worktree });
     if (primer.isEmpty) return { content: [{ type: 'text' as const, text: 'No past sessions found for this repo.' }] };
-    return { content: [{ type: 'text' as const, text: JSON.stringify(primer, null, 2) }] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(primer) }] };
   },
 );
 

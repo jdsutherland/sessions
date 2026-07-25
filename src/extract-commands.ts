@@ -3,6 +3,11 @@ import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
+/** Upper bound on each stored command. 500 matches parser's CLOSING_MAX rather than
+ *  extract-errors' 300: an error's first 300 chars are usually the whole message, but a
+ *  command carries its identity in the tail too (flags, target paths), and real heredocs
+ *  run past 300. Without this a single 9KB one-liner rides into every payload. */
+export const MAX_COMMAND_LEN = 500;
 
 // Claude: assistant `message.content[]` tool_use named `Bash` → `input.command`.
 function extractClaude(lines: string[], push: (c: string) => void): void {
@@ -83,7 +88,10 @@ function extractOpencode(lines: string[], push: (c: string) => void): void {
 export function extractCommands(lines: string[], tool: Tool): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  const push = (c: string): void => {
+  // Clip before the seen-check so dedup runs on what we actually store — two commands
+  // that differ only past the cap would otherwise land as identical rows.
+  const push = (raw: string): void => {
+    const c = raw.length > MAX_COMMAND_LEN ? raw.slice(0, MAX_COMMAND_LEN) : raw;
     if (seen.has(c) || out.length >= MAX_COMMANDS) return;
     seen.add(c);
     out.push(c);

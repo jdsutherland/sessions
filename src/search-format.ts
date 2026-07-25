@@ -8,6 +8,21 @@ export function buildResumeCommand(tool: Tool, cwd: string, sessionId: string): 
   return `cd "${cwd}"`; // pi, codex: no direct session resume
 }
 
+// Read-path bounds. A search result is a scanning aid, not a transcript: at the MCP's
+// default limit of 20, verbatim files+commands serialized ~200k chars (~50k tokens).
+// 200 chars matches digest.ts's USER_MAX — the existing display-facing snippet bound.
+export const RESULT_COMMAND_MAX = 200;
+export const MAX_RESULT_COMMANDS = 8;
+export const MAX_RESULT_FILES = 20;
+
+// First line only, then a hard char clip: a heredoc's opening line identifies the
+// command and the body is transcript (15% of indexed commands are multi-line). The
+// ellipsis covers both losses so a clipped command never reads as the whole thing.
+function clipCommand(c: string): string {
+  const clipped = c.split('\n', 1)[0]!.trimEnd().slice(0, RESULT_COMMAND_MAX);
+  return clipped.length < c.length ? clipped + '…' : clipped;
+}
+
 export interface FormattedResult {
   sessionId: string;
   tool: Tool;
@@ -17,8 +32,12 @@ export interface FormattedResult {
   title: string | null;
   snippet: string;
   messageCount: number;
+  /** Capped at MAX_RESULT_FILES / MAX_RESULT_COMMANDS; the totals say how much was
+   *  dropped so truncation is honest rather than silent (same shape grep_sessions uses). */
   files: string[];
+  filesTotal: number;
   commands: string[];
+  commandsTotal: number;
   errored: boolean;
   exists: boolean;
   filePath: string;
@@ -40,8 +59,10 @@ export function formatResult(r: SessionResult): FormattedResult {
     title: r.customTitle || null,
     snippet: r.displayText,
     messageCount: r.messageCount,
-    files: r.files,
-    commands: r.commands,
+    files: r.files.slice(0, MAX_RESULT_FILES),
+    filesTotal: r.files.length,
+    commands: r.commands.slice(0, MAX_RESULT_COMMANDS).map(clipCommand),
+    commandsTotal: r.commands.length,
     errored: r.errored,
     exists: r.exists,
     filePath: r.filePath,
