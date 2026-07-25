@@ -277,7 +277,7 @@ describe('runWrapped', () => {
         '-e',
         "require('./src/wrapped/index.ts').runWrapped({tz:'UTC',stdout:true,offline:true,extras:'/nope/missing.json',noContent:true,roots:{claudeCode:'/nope',pi:'/nope',codex:'/nope'}})",
       ],
-      { cwd: '/Users/nicknisi/Developer/sessions' },
+      { cwd: join(import.meta.dir, '../..') },
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr.toString()).toContain('--extras: cannot read');

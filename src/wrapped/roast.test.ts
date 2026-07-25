@@ -97,7 +97,6 @@ describe('extractJsonArray', () => {
 
 describe('runRoast', () => {
   const runner = (out: string) => async () => out;
-
   test('validates model output and stamps provenance on every slide', async () => {
     const slides = await runRoast(data, {
       preferred: 'claude',
