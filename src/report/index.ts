@@ -45,7 +45,13 @@ export interface ReportResult {
   json: string;
 }
 
-const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
+const TOOL_MAP: Record<string, ToolId> = {
+  claude: 'claude-code',
+  codex: 'codex',
+  pi: 'pi',
+  opencode: 'opencode',
+  omp: 'omp',
+};
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
@@ -104,7 +110,7 @@ export function parseReportArgs(argv: string[]): ReportOptions {
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
-        if (!mapped) die('--tool must be claude|codex|pi|opencode');
+        if (!mapped) die('--tool must be claude|codex|pi|opencode|omp');
         opts.tool = mapped;
         break;
       }

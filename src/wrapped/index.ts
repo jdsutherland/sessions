@@ -46,14 +46,20 @@ export interface WrappedOptions {
   roastRunner?: RoastRunner;
 }
 
-const ROAST_TOOLS: Record<string, RoastToolId> = { claude: 'claude', codex: 'codex', pi: 'pi' };
+const ROAST_TOOLS: Record<string, RoastToolId> = { claude: 'claude', codex: 'codex', pi: 'pi', omp: 'omp' };
 
 export interface WrappedResult {
   htmlPath?: string;
   json: string;
 }
 
-const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
+const TOOL_MAP: Record<string, ToolId> = {
+  claude: 'claude-code',
+  codex: 'codex',
+  pi: 'pi',
+  opencode: 'opencode',
+  omp: 'omp',
+};
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
@@ -75,13 +81,13 @@ Usage:
 
 Options:
   --year <YYYY>    Calendar year to wrap (default: current year)
-  --tool <name>    Only one tool: claude, codex, pi, or opencode
+  --tool <name>    Only one tool: claude, codex, pi, omp, or opencode
   --tz <zone>      Timezone for day/hour bucketing (default: TIMEZONE env or America/Chicago)
   --extras <path>  JSON file of extra slides: [{"headline": "...", "title"?, "subline"?, "footnote"?}]
-  --roast          Let an installed agent CLI (claude/codex/pi) improvise a few
+  --roast          Let an installed agent CLI (claude/codex/pi/omp) improvise a few
                    roast slides from your stats — opt-in, needs no setup, and the
                    page still renders if it fails. Stats only; nothing else is sent.
-  --roast-with <tool>  Force the roast CLI: claude, codex, or pi
+  --roast-with <tool>  Force the roast CLI: claude, codex, pi, or omp
   --out <path>     Write HTML here instead of a temp file (implies no auto-open)
   --stdout         Print wrapped data as JSON to stdout
   --offline        Skip the pricing refresh (use cached/embedded rates)
@@ -113,7 +119,7 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
-        if (!mapped) die('--tool must be claude|codex|pi|opencode');
+        if (!mapped) die('--tool must be claude|codex|pi|opencode|omp');
         opts.tool = mapped;
         break;
       }
@@ -141,7 +147,7 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--roast-with': {
         const v = argv[++i] ?? '';
         const mapped = ROAST_TOOLS[v];
-        if (!mapped) die('--roast-with must be claude|codex|pi');
+        if (!mapped) die('--roast-with must be claude|codex|pi|omp');
         opts.roast = true;
         opts.roastWith = mapped;
         break;

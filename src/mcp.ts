@@ -33,7 +33,7 @@ import {
 } from './mcp-schemas';
 
 const INSTRUCTIONS =
-  'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
+  'Searchable history of every past AI coding session (Claude Code, Codex, Pi, omp, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
   'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
   'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
   'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
@@ -316,7 +316,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Search past AI coding sessions',
       description:
-        'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. Pi session results also carry `branches` (in-file /tree fork count) and `forkedFrom` (basename of the parent session file for /fork copies, empty when none). To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+        'Search across all past AI coding sessions from Claude Code, Codex, Pi, omp, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. Pi session results also carry `branches` (in-file /tree fork count) and `forkedFrom` (basename of the parent session file for /fork copies, empty when none). To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
       inputSchema: {
         query: z
           .string()
@@ -324,7 +324,7 @@ function registerTools(server: McpServer): void {
           .describe(
             'Text to search across session messages, commands, file paths, errors, and reasoning. Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
           ),
-        tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
+        tool: z.enum(['claude', 'codex', 'pi', 'opencode', 'omp']).optional().describe('Filter to a specific tool'),
         project: z.string().optional().describe('Filter to sessions from this project directory path'),
         errored: z.boolean().optional().describe('Only return sessions that hit an error'),
         files: z
@@ -353,7 +353,7 @@ function registerTools(server: McpServer): void {
         regex: z.boolean().optional().default(false).describe('Treat pattern as a JS regular expression.'),
         ignoreCase: z.boolean().optional().default(true).describe('Case-insensitive match (default true).'),
         role: z.enum(['user', 'assistant']).optional().describe('Restrict to your turns (user) or the AI (assistant).'),
-        tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool.'),
+        tool: z.enum(['claude', 'codex', 'pi', 'opencode', 'omp']).optional().describe('Filter to a specific tool.'),
         project: z.string().optional().describe('Filter to sessions from this project directory path.'),
         after: z.string().optional().describe('Only sessions on/after this date (YYYY-MM-DD).'),
         before: z.string().optional().describe('Only sessions on/before this date (YYYY-MM-DD).'),
@@ -428,7 +428,7 @@ function registerTools(server: McpServer): void {
       inputSchema: {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
-        tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
+        tool: z.enum(['claude', 'codex', 'pi', 'opencode', 'omp']).optional().describe('Filter to a specific tool'),
         project: z.string().optional().describe('Filter to sessions from this project directory path'),
         detail: z
           .enum(['compact', 'highlights', 'full'])
@@ -458,7 +458,7 @@ function registerTools(server: McpServer): void {
       inputSchema: {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
-        tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
+        tool: z.enum(['claude', 'codex', 'pi', 'opencode', 'omp']).optional().describe('Filter to a specific tool'),
         project: z.string().optional().describe('Filter to sessions from this project directory path'),
       },
       outputSchema: GetSessionMetricsOutput,
@@ -489,7 +489,7 @@ function registerTools(server: McpServer): void {
           .optional()
           .describe(`Recent-tier size (default 10, max ${MAX_PRIMER_RECENT}).`),
         days: z.number().int().min(1).optional().describe('Only include sessions from the last N days.'),
-        tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to one tool.'),
+        tool: z.enum(['claude', 'codex', 'pi', 'opencode', 'omp']).optional().describe('Filter to one tool.'),
         worktree: z
           .boolean()
           .optional()
@@ -608,7 +608,7 @@ function registerResources(server: McpServer): void {
       // enumeration budget. With it absent, clients fall back to each entry's own `name`,
       // which is that session's intent. `description` and `mimeType` are safe to spread:
       // both are true of every entry, and entries override `description` with their own.
-      description: 'A past Claude Code, Codex, Pi, or OpenCode session transcript digest.',
+      description: 'A past Claude Code, Codex, Pi, omp, or OpenCode session transcript digest.',
       mimeType: SESSION_MIME,
     },
     async (uri, { sessionId }) => {

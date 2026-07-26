@@ -74,6 +74,9 @@ function getPiDir(): string {
 function getCodexDir(): string {
   return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
 }
+function getOmpDir(): string {
+  return process.env.SESSIONS_OMP_DIR || join(home, '.omp/agent/sessions');
+}
 
 // Bump 6 -> 7: search becomes message-granular. A new message_fts table holds one
 // row per message (genuine user turns + assistant turns) carrying the parser's
@@ -271,6 +274,7 @@ async function discoverFiles(): Promise<FileEntry[]> {
   const claudeDir = getClaudeDir();
   const piDir = getPiDir();
   const codexDir = getCodexDir();
+  const ompDir = getOmpDir();
 
   if (existsSync(claudeDir)) {
     let dirs: string[];
@@ -308,6 +312,22 @@ async function discoverFiles(): Promise<FileEntry[]> {
     const glob = new Bun.Glob('**/*.jsonl');
     for await (const p of glob.scan(codexDir)) {
       entries.push({ path: join(codexDir, p), tool: 'codex' });
+    }
+  }
+
+  if (existsSync(ompDir)) {
+    let dirs: string[];
+    try {
+      dirs = await readdir(ompDir);
+    } catch {
+      dirs = [];
+    }
+    for (const dirname of dirs) {
+      const dirpath = join(ompDir, dirname);
+      const glob = new Bun.Glob('*.jsonl');
+      for await (const p of glob.scan(dirpath)) {
+        entries.push({ path: join(dirpath, p), tool: 'omp' });
+      }
     }
   }
 

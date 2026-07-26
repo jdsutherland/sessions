@@ -16,6 +16,7 @@ const INDEX_TOOL: Record<ToolId, string> = {
   'claude-code': 'claude',
   pi: 'pi',
   codex: 'codex',
+  omp: 'omp',
   opencode: 'opencode',
 };
 

@@ -45,7 +45,12 @@ function extractCodex(lines: string[], push: (c: string) => void): void {
   }
 }
 
-// Pi: the dedicated `bashExecution` channel, plus a `bash` toolCall block.
+// Pi (and omp, a Pi fork — confirmed identical `{type:'toolCall', name:'bash',
+// arguments:{command}}` message-content shape against real captured omp logs;
+// omp also emits a parallel `{type:'custom', customType:'tool_execution_start'}`
+// progress-event channel with the same `args.command`, but the toolCall block
+// below already captures every call, so that channel isn't read separately):
+// the dedicated `bashExecution` channel, plus a `bash` toolCall block.
 function extractPi(lines: string[], push: (c: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
@@ -90,7 +95,7 @@ export function extractCommands(lines: string[], tool: Tool): string[] {
   };
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
-  else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'pi' || tool === 'omp') extractPi(lines, push);
   else if (tool === 'opencode') extractOpencode(lines, push);
   return out;
 }

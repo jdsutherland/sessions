@@ -49,4 +49,5 @@ export const toolColor: Record<string, string> = {
   pi: C.green,
   codex: C.blue,
   opencode: C.yellow,
+  omp: C.cyan,
 };

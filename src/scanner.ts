@@ -12,6 +12,7 @@ import { getPiSessionsDir } from './paths';
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
 const CODEX_DIR = join(home, '.codex/sessions');
+const OMP_DIR = join(home, '.omp/agent/sessions');
 
 async function processSession(
   filePath: string,
@@ -149,6 +150,10 @@ export async function scanSessions(
   }
   if (toolFilter === '' || toolFilter === 'codex') {
     scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));
+  }
+  if (toolFilter === '' || toolFilter === 'omp') {
+    const ompPrefix = repoRoot ? `-${claudePrefix}-` : '--';
+    scans.push(scanDir(OMP_DIR, ompPrefix, 'omp', repoRoot, searchAll, normalizedQuery));
   }
   if (toolFilter === '' || toolFilter === 'opencode') {
     scans.push(scanOpencode(repoRoot, searchAll, normalizedQuery));

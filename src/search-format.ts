@@ -6,6 +6,7 @@ import type { MessageHit, SessionResult, Tool } from './types';
 export function buildResumeCommand(tool: Tool, cwd: string, sessionId: string): string {
   if (tool === 'claude') return `cd "${cwd}" && claude --resume ${sessionId}`;
   if (tool === 'opencode') return `cd "${cwd}" && opencode --session ${sessionId}`;
+  if (tool === 'omp') return `cd "${cwd}" && omp --resume ${sessionId}`;
   return `cd "${cwd}"`; // pi, codex: no direct session resume
 }
 

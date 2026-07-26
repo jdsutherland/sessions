@@ -71,7 +71,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     if (!cwd) {
       if (tool === 'claude' && d.cwd) {
         cwd = d.cwd;
-      } else if ((tool === 'pi' || tool === 'opencode') && d.type === 'session' && d.cwd) {
+      } else if ((tool === 'pi' || tool === 'opencode' || tool === 'omp') && d.type === 'session' && d.cwd) {
         cwd = d.cwd;
       } else if (tool === 'codex' && d.type === 'session_meta') {
         const value = (d.payload as Record<string, unknown> | undefined)?.cwd;
@@ -146,8 +146,9 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
 
     if (tool === 'claude') {
       if (d.cwd) return d.cwd;
-    } else if (tool === 'pi' || tool === 'opencode') {
+    } else if (tool === 'pi' || tool === 'opencode' || tool === 'omp') {
       // Pi's native shape; OpenCode synthesizes the same session line (see src/opencode.ts).
+      // omp (a Pi fork) writes the identical {type:'session', cwd} shape.
       if (d.type === 'session' && d.cwd) return d.cwd;
     } else if (tool === 'codex') {
       if (d.type === 'session_meta') {
@@ -162,8 +163,8 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
 /**
  * The git branch a session ran on, read from the logs (not the current worktree).
  * Claude writes `gitBranch` on every line, so the last non-empty one is "where
- * you left off". Codex records its starting branch once in `session_meta`. Pi
- * and OpenCode carry no git metadata, so they return ''.
+ * you left off". Codex records its starting branch once in `session_meta`. Pi,
+ * omp, and OpenCode carry no git metadata, so they return ''.
  */
 export function sessionBranch(lines: string[], tool: Tool): string {
   if (tool === 'codex') {
@@ -185,7 +186,7 @@ export function sessionBranch(lines: string[], tool: Tool): string {
     }
     return branch;
   }
-  return ''; // pi, opencode: no git metadata in logs
+  return ''; // pi, omp, opencode: no git metadata in logs
 }
 
 function clean(text: string): string {

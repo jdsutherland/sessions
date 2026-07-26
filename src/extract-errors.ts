@@ -72,6 +72,18 @@ function extractPi(lines: string[], push: (m: string) => void): void {
   }
 }
 
+/**
+ * omp (a Pi fork): unlike Pi, tool results are not embedded in `message.content`
+ * (no `toolResult`-role messages, no `toolResult`-type content blocks observed) —
+ * real captured logs show only `tool_execution_start` progress events, never a
+ * paired `tool_execution_end` with exit/error info, in the sessions available to
+ * confirm this against. Deliberate no-op until a session with a failed tool call
+ * surfaces the completion/error shape, mirroring extractPi's no-op in extract-files.ts.
+ */
+function extractOmp(_lines: string[], _push: (m: string) => void): void {
+  // Intentionally empty — see doc comment above.
+}
+
 // OpenCode: a tool block whose `state.status` is 'error' — the message is `state.error`.
 function extractOpencode(lines: string[], push: (m: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
@@ -94,6 +106,7 @@ export function extractErrors(lines: string[], tool: Tool): SessionErrors {
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
   else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'omp') extractOmp(lines, push);
   else if (tool === 'opencode') extractOpencode(lines, push);
   return { errored: count > 0, count, messages };
 }

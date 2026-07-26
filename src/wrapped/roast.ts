@@ -9,7 +9,7 @@
 import type { WrappedData, WrappedExtra } from './types.ts';
 import { coerceExtras } from './extras.ts';
 
-export type RoastToolId = 'claude' | 'codex' | 'pi';
+export type RoastToolId = 'claude' | 'codex' | 'pi' | 'omp';
 
 interface RoastTool {
   id: RoastToolId;
@@ -20,11 +20,13 @@ interface RoastTool {
 }
 
 // Preference order when --roast-with isn't given: Claude first (best taste for
-// this), then Codex, then Pi. Each runs its own headless/exec mode.
+// this), then Codex, then Pi, then omp (a Pi fork — same -p/--print flag). Each
+// runs its own headless/exec mode.
 const ROAST_TOOLS: RoastTool[] = [
   { id: 'claude', label: 'Claude', bin: 'claude', args: (p) => ['-p', p] },
   { id: 'codex', label: 'Codex', bin: 'codex', args: (p) => ['exec', p] },
   { id: 'pi', label: 'Pi', bin: 'pi', args: (p) => ['-p', p] },
+  { id: 'omp', label: 'omp', bin: 'omp', args: (p) => ['-p', p] },
 ];
 
 /** The table entry for `id`, without asking PATH whether it is installed. */

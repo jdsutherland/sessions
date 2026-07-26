@@ -1,6 +1,7 @@
-// VENDORED from tokenmaxing/src/aggregate.ts (public contract: schemaVersion 2) with ONE local
-// divergence: the 'opencode' TOOL_LABEL entry is a sessions-owned extension — see the matching
-// note in ./types.ts. When re-syncing with upstream, preserve it. Do not edit other logic here.
+// VENDORED from tokenmaxing/src/aggregate.ts (public contract: schemaVersion 2) with local
+// divergences: the 'opencode' and 'omp' TOOL_LABEL entries are sessions-owned extensions — see
+// the matching note in ./types.ts. When re-syncing with upstream, preserve them. Do not edit
+// other logic here.
 import type {
   TokenmaxingData,
   ToolBreakdown,
@@ -29,6 +30,7 @@ const TOOL_LABEL: Record<ToolId, string> = {
   pi: 'Pi',
   codex: 'Codex',
   opencode: 'OpenCode', // sessions-local extension — not in upstream tokenmaxing (see header)
+  omp: 'omp', // sessions-local extension — not in upstream tokenmaxing (see header)
 };
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',

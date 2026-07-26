@@ -16,7 +16,7 @@ Every AI coding session leaves a transcript behind. Claude Code buries them in `
 
 `sessions` builds a full-text search index over all of it and makes that history useful in three ways:
 
-- **Search & resume (CLI)** — fuzzy-find any past session across all four tools, ranked by relevance, and jump back in.
+- **Search & resume (CLI)** — fuzzy-find any past session across all five tools, ranked by relevance, and jump back in.
 - **Agent memory (MCP)** — agents search your history, pull a repo-scoped context primer when you return to a codebase, and answer "what did I do last week?" via bundled skills.
 - **Usage reports** — a token/cost dashboard across tools, models, and projects.
 
@@ -131,7 +131,7 @@ sessions memory import <p>   # Merge another author's bundle in as candidates
 | `uninstall`            | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                                                                                                                                                                                                                                                                                                                  |
 | `cleanup`              | Full reset: uninstall plugin + clear search index                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `--here`               | Scope to the current git repo (default: all projects)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, `omp`, or `opencode`                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `--errored`            | Only show sessions that hit an error                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `--file <path>`        | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                                                                                                                                                                                                                                                                                                                           |
 | `--mcp`                | Start as an MCP server (stdio transport)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -287,7 +287,7 @@ To turn it off, run `sessions uninstall` (which also removes the plugin and MCP 
 
 ## Usage reports
 
-`sessions report` reads your local Claude Code, Codex, Pi, and OpenCode logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON is available for piping and `--format text` prints a summary straight to the terminal.
+`sessions report` reads your local Claude Code, Codex, Pi, omp, and OpenCode logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON is available for piping and `--format text` prints a summary straight to the terminal.
 
 ```sh
 sessions report                              # HTML dashboard, opens in your browser
@@ -315,7 +315,7 @@ The selected period is shown prominently at the top of both outputs (and in the 
 | `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                                                     |
 | `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                                                               |
 | `--month YYYY-MM`                                                           | A specific calendar month.                                                                                                                      |
-| `--tool claude\|codex\|pi\|opencode`                                        | Restrict to one tool. Default: all four.                                                                                                        |
+| `--tool claude\|codex\|pi\|omp\|opencode`                                   | Restrict to one tool. Default: all five.                                                                                                        |
 | `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                                                  |
 | `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                                                           |
 | `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                                                     |
@@ -340,7 +340,7 @@ In the HTML, every stat, section heading, and table column explains itself on ho
 
 The JSON is a sessions-owned `UsageReport` (`{ "generator": "sessions", "version": 1, ... }`). The HTML is fully self-contained (inline SVG charts, no external assets) and adapts to light/dark.
 
-Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs; OpenCode sessions use their recorded cost when present (Anthropic) and fall back to estimated pricing otherwise (OpenAI). A model with no published price is billed at the newest rate in its own family and flagged as an estimate in the report; one in no known family is counted at `$0`, loudly. Token totals exclude cache reads (replayed context, mostly free reuse).
+Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi and omp sessions use the cost recorded in their own logs; OpenCode sessions use their recorded cost when present (Anthropic) and fall back to estimated pricing otherwise (OpenAI). A model with no published price is billed at the newest rate in its own family and flagged as an estimate in the report; one in no known family is counted at `$0`, loudly. Token totals exclude cache reads (replayed context, mostly free reuse).
 
 ## Wrapped
 
@@ -358,7 +358,7 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 
 ### Roast mode
 
-`--roast` hands your computed stats to an agent CLI you already have installed (`claude`, then `codex`, then `pi` — override with `--roast-with <tool>`) and asks it to improvise a few edgy, bespoke roast slides, which are appended to the story. It rides your existing subscription — no API key, no setup. Only the **stats** are sent (counts, project names, the numbers already on the page), never raw transcript text, and every roast slide is stamped "improvised by \<tool\>" so a generated line can never pass for a counted one. It's opt-in and fails open: no CLI, a timeout, or unparseable output just drops the roast and the deterministic page renders as normal. Expect it to add 15–90s.
+`--roast` hands your computed stats to an agent CLI you already have installed (`claude`, then `codex`, then `pi`, then `omp` — override with `--roast-with <tool>`) and asks it to improvise a few edgy, bespoke roast slides, which are appended to the story. It rides your existing subscription — no API key, no setup. Only the **stats** are sent (counts, project names, the numbers already on the page), never raw transcript text, and every roast slide is stamped "improvised by \<tool\>" so a generated line can never pass for a counted one. It's opt-in and fails open: no CLI, a timeout, or unparseable output just drops the roast and the deterministic page renders as normal. Expect it to add 15–90s.
 
 `--extras <path>` is the manual version: a JSON array of up to six slides (`[{"headline": "...", "title"?, "subline"?, "footnote"?}]`) injected into the story. `--roast` is the same seam, filled by a model instead of by hand.
 
@@ -372,6 +372,7 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 | ----------- | ------------------------------------- |
 | Claude Code | `~/.claude/projects/<project>/`       |
 | Pi          | `~/.pi/agent/sessions/`               |
+| omp         | `~/.omp/agent/sessions/`              |
 | Codex       | `~/.codex/sessions/`                  |
 | OpenCode    | `~/.local/share/opencode/opencode.db` |
 

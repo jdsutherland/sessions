@@ -11,6 +11,7 @@ import {
   type AgentName,
 } from './parsers/claude-code.ts';
 import { parsePi, parsePiFile } from './parsers/pi.ts';
+import { parseOmp, parseOmpFile } from './parsers/omp.ts';
 import { parseCodex, parseCodexFile } from './parsers/codex.ts';
 import { parseOpencode } from './parsers/opencode.ts';
 import { walkJsonl, pruneThreshold } from './parsers/walk.ts';
@@ -31,6 +32,8 @@ export interface ReportRoots {
   claudeCode: string;
   pi: string;
   codex: string;
+  /** omp's session root. Optional for callers that predate omp support. */
+  omp?: string;
   /** OpenCode's SQLite DB path (not a directory) — its sessions live in one DB. Optional so
    *  callers that predate OpenCode support (and tests) need not supply it. */
   opencode?: string;
@@ -44,6 +47,7 @@ export function defaultRoots(): ReportRoots {
     // the search index and scanner — one source of truth.
     pi: getPiSessionsDir(),
     codex: join(home, '.codex', 'sessions'),
+    omp: join(home, '.omp', 'agent', 'sessions'),
     // Same resolution (env override included) as the search index — one source of truth.
     opencode: getOpencodeDbPath(),
   };
@@ -80,6 +84,8 @@ function fileSources(roots: ReportRoots, want: (t: ToolId) => boolean): FileSour
         return { events, agentTypes };
       },
     });
+  if (want('omp') && roots.omp)
+    out.push({ root: roots.omp, parseFile: async (p) => ({ events: await parseOmpFile(p), agentTypes: {} }) });
   if (want('codex'))
     out.push({ root: roots.codex, parseFile: async (p) => ({ events: await parseCodexFile(p), agentTypes: {} }) });
   return out;
@@ -91,6 +97,7 @@ async function gatherDirect(roots: ReportRoots, want: (t: ToolId) => boolean, si
   const tasks: Promise<UsageEvent[]>[] = [];
   if (want('claude-code')) tasks.push(parseClaudeCode(roots.claudeCode, walk));
   if (want('pi')) tasks.push(parsePi(roots.pi, walk));
+  if (want('omp') && roots.omp) tasks.push(parseOmp(roots.omp, walk));
   if (want('codex')) tasks.push(parseCodex(roots.codex, walk));
   return (await Promise.all(tasks)).flat();
 }
