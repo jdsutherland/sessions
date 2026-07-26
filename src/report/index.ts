@@ -45,6 +45,9 @@ export interface ReportResult {
   json: string;
 }
 
+// ds4-agent is deliberately absent: it runs a local model, so there is no cost to
+// report, and its KV checkpoints carry only a total context-token count — no
+// per-message input/output/cache split a UsageEvent could honestly be built from.
 const TOOL_MAP: Record<string, ToolId> = {
   claude: 'claude-code',
   codex: 'codex',
@@ -110,7 +113,13 @@ export function parseReportArgs(argv: string[]): ReportOptions {
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
-        if (!mapped) die('--tool must be claude|codex|pi|opencode|omp');
+        if (!mapped) {
+          die(
+            v === 'ds4'
+              ? 'ds4-agent runs a local model and records no per-message token usage, so it has no cost report'
+              : '--tool must be claude|codex|pi|opencode|omp',
+          );
+        }
         opts.tool = mapped;
         break;
       }

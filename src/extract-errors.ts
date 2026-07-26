@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks } from './extract-util';
+import { tryParse, synthesizedAssistantBlocks } from './extract-util';
 
 export const MAX_ERROR_MESSAGES = 20;
 export const MAX_ERROR_LEN = 300;
@@ -86,12 +86,34 @@ function extractOmp(_lines: string[], _push: (m: string) => void): void {
 
 // OpenCode: a tool block whose `state.status` is 'error' — the message is `state.error`.
 function extractOpencode(lines: string[], push: (m: string) => void): void {
-  for (const block of opencodeAssistantBlocks(lines)) {
+  for (const block of synthesizedAssistantBlocks(lines)) {
     if (block.type !== 'tool') continue;
     const state = block.state as Record<string, unknown> | undefined;
     if (!state || state.status !== 'error') continue;
     const msg = typeof state.error === 'string' ? state.error : '';
     push(msg || `${typeof block.tool === 'string' ? block.tool : 'tool'} error`);
+  }
+}
+
+/**
+ * ds4: results come back as pseudo-user turns, so the failure signal is the
+ * `toolResult` block src/ds4.ts attaches to them — a non-zero `exitStatus` lifted
+ * out of the `exit_status=N` line inside the rendered `<tool_result>` payload.
+ * The accompanying text block carries the output the message reports.
+ */
+function extractDs4(lines: string[], push: (m: string) => void): void {
+  for (const line of lines) {
+    const d = tryParse(line);
+    if (!d || d.type !== 'message') continue;
+    const msg = d.message as Record<string, unknown> | undefined;
+    if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+    const result = msg.content.find(
+      (b): b is Record<string, unknown> =>
+        !!b && typeof b === 'object' && (b as Record<string, unknown>).type === 'toolResult',
+    );
+    if (!result || result.exitStatus === 0) continue;
+    const tool = typeof result.tool === 'string' ? result.tool : 'tool';
+    push(textOf(msg.content) || `${tool} exit ${String(result.exitStatus)}`);
   }
 }
 
@@ -108,5 +130,6 @@ export function extractErrors(lines: string[], tool: Tool): SessionErrors {
   else if (tool === 'pi') extractPi(lines, push);
   else if (tool === 'omp') extractOmp(lines, push);
   else if (tool === 'opencode') extractOpencode(lines, push);
+  else if (tool === 'ds4') extractDs4(lines, push);
   return { errored: count > 0, count, messages };
 }

@@ -1,11 +1,13 @@
 import { readFileSync, statSync } from 'node:fs';
 import { type Tool } from './types';
 import { isOpencodePath, readOpencodeSession, opencodeStat } from './opencode';
+import { isDs4Path, readDs4Session } from './ds4';
 
 // Generic session IO: every consumer (indexer, scanner, digest, MCP) reads a
 // session as JSONL-style `lines[]` through here. JSONL tools read their file
 // directly; OpenCode sessions — synthetic dbPath/sessionId paths with no real
-// file — are reconstructed from the SQLite DB by src/opencode.ts.
+// file — are reconstructed from the SQLite DB by src/opencode.ts, and ds4
+// sessions are decoded from the KV checkpoint's embedded transcript by src/ds4.ts.
 
 /**
  * Read any session into `lines[]`. `tool` is optional: when omitted (call sites
@@ -15,6 +17,9 @@ import { isOpencodePath, readOpencodeSession, opencodeStat } from './opencode';
 export function readSessionLines(filePath: string, tool?: Tool): string[] {
   if (tool === 'opencode' || (tool === undefined && isOpencodePath(filePath))) {
     return readOpencodeSession(filePath);
+  }
+  if (tool === 'ds4' || (tool === undefined && isDs4Path(filePath))) {
+    return readDs4Session(filePath);
   }
   try {
     return readFileSync(filePath, 'utf-8').trimEnd().split('\n');

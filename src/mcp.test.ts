@@ -45,6 +45,8 @@ function setEnv(): void {
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
+  process.env.SESSIONS_OMP_DIR = join(tmp, 'omp');
+  process.env.SESSIONS_DS4_DIR = join(tmp, 'ds4');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
   // Required now that tools/call reaches get_memory from this file: without it the memory
   // store would open (and create) the developer's real ~/.local/share/sessions/memory.db.
@@ -801,6 +803,8 @@ describe('empty results', () => {
     process.env.SESSIONS_CLAUDE_DIR = join(emptyTmp, 'claude');
     process.env.SESSIONS_PI_DIR = join(emptyTmp, 'pi');
     process.env.SESSIONS_CODEX_DIR = join(emptyTmp, 'codex');
+    process.env.SESSIONS_OMP_DIR = join(emptyTmp, 'omp');
+    process.env.SESSIONS_DS4_DIR = join(emptyTmp, 'ds4');
     process.env.SESSIONS_OPENCODE_DB = join(emptyTmp, 'opencode.db');
     process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'data');
   }

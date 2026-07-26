@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
+import { tryParse, synthesizedAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored edited-file paths per session (bounds the indexed column). */
 export const MAX_FILES = 50;
@@ -84,7 +84,7 @@ function extractOmp(_lines: string[], _push: (p: string) => void): void {
  * carries the same `*** … File:` headers as Codex. Shape confirmed against opencode.db.
  */
 function extractOpencode(lines: string[], push: (p: string) => void): void {
-  for (const block of opencodeAssistantBlocks(lines)) {
+  for (const block of synthesizedAssistantBlocks(lines)) {
     if (block.type === 'patch' && Array.isArray(block.files)) {
       for (const f of block.files) if (typeof f === 'string' && f) push(f);
       continue;
@@ -99,6 +99,20 @@ function extractOpencode(lines: string[], push: (p: string) => void): void {
         if (m && m[1]) push(m[1].trim());
       }
     }
+  }
+}
+
+/**
+ * ds4: `edit` and `write` DSML invokes both carry a plain `path` argument (the
+ * synthesized tool block puts every DSML parameter under `state.input`), so
+ * edited files surface directly. Confirmed against the real ~/.ds4/kvcache corpus.
+ */
+function extractDs4(lines: string[], push: (p: string) => void): void {
+  for (const block of synthesizedAssistantBlocks(lines)) {
+    if (block.type !== 'tool') continue;
+    if (block.tool !== 'edit' && block.tool !== 'write') continue;
+    const path = toolInput(block).path;
+    if (typeof path === 'string' && path.trim()) push(path.trim());
   }
 }
 
@@ -117,6 +131,7 @@ export function extractFiles(lines: string[], tool: Tool): string[] {
   else if (tool === 'pi') extractPi(lines, push);
   else if (tool === 'omp') extractOmp(lines, push);
   else if (tool === 'opencode') extractOpencode(lines, push);
+  else if (tool === 'ds4') extractDs4(lines, push);
 
   return out;
 }
@@ -185,12 +200,13 @@ export function extractFilesRead(lines: string[], tool: Tool): string[] {
   if (tool === 'claude') extractClaudeRead(lines, push);
   else if (tool === 'omp') extractOmpRead(lines, push);
   else if (tool === 'opencode') extractOpencodeRead(lines, push);
+  else if (tool === 'ds4') extractDs4Read(lines, push);
   return out;
 }
 
 /** OpenCode: read/searched targets — `read` tool `filePath`, `grep`/`glob` `path`/`pattern`. */
 function extractOpencodeRead(lines: string[], push: (p: string) => void): void {
-  for (const block of opencodeAssistantBlocks(lines)) {
+  for (const block of synthesizedAssistantBlocks(lines)) {
     if (block.type !== 'tool') continue;
     const input = toolInput(block);
     const path =
@@ -200,5 +216,15 @@ function extractOpencodeRead(lines: string[], push: (p: string) => void): void {
           ? (input.path ?? input.pattern)
           : undefined;
     if (typeof path === 'string' && path) push(path);
+  }
+}
+
+/** ds4: read/searched targets — `read` and `list` invokes both carry `path`. */
+function extractDs4Read(lines: string[], push: (p: string) => void): void {
+  for (const block of synthesizedAssistantBlocks(lines)) {
+    if (block.type !== 'tool') continue;
+    if (block.tool !== 'read' && block.tool !== 'list') continue;
+    const path = toolInput(block).path;
+    if (typeof path === 'string' && path.trim()) push(path.trim());
   }
 }

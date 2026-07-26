@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
+import { tryParse, synthesizedAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
@@ -75,9 +75,10 @@ function extractPi(lines: string[], push: (c: string) => void): void {
   }
 }
 
-// OpenCode: the `bash` tool block's `state.input.command`.
-function extractOpencode(lines: string[], push: (c: string) => void): void {
-  for (const block of opencodeAssistantBlocks(lines)) {
+// OpenCode and ds4: the `bash` tool block's `state.input.command`. Both bridges
+// synthesize the identical block, so one traversal serves both.
+function extractSynthesizedBash(lines: string[], push: (c: string) => void): void {
+  for (const block of synthesizedAssistantBlocks(lines)) {
     if (block.type !== 'tool' || block.tool !== 'bash') continue;
     const cmd = toolInput(block).command;
     if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
@@ -96,6 +97,6 @@ export function extractCommands(lines: string[], tool: Tool): string[] {
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
   else if (tool === 'pi' || tool === 'omp') extractPi(lines, push);
-  else if (tool === 'opencode') extractOpencode(lines, push);
+  else if (tool === 'opencode' || tool === 'ds4') extractSynthesizedBash(lines, push);
   return out;
 }

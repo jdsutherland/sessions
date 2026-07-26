@@ -2,7 +2,7 @@
 
 <p align="center">
   Search and memory across your AI coding sessions.<br/>
-  One index over <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Pi</strong>, and <strong>OpenCode</strong> — fuzzy-find and resume past sessions from the CLI, give agents recall over prior work via MCP, and see where your tokens go.
+  One index over <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Pi</strong>, <strong>omp</strong>, <strong>OpenCode</strong>, and <strong>ds4-agent</strong> — fuzzy-find and resume past sessions from the CLI, give agents recall over prior work via MCP, and see where your tokens go.
 </p>
 
 <p align="center">
@@ -12,11 +12,11 @@
 
 ## Why
 
-Every AI coding session leaves a transcript behind. Claude Code buries them in `~/.claude/projects/`, Codex and Pi have their own layouts, OpenCode keeps everything in a SQLite database — and everything in them (what you tried, what you decided, what broke) is effectively write-only.
+Every AI coding session leaves a transcript behind. Claude Code buries them in `~/.claude/projects/`, Codex, Pi, and omp (a Pi fork) each have their own layouts, OpenCode keeps everything in a SQLite database, ds4-agent hides the conversation inside a multi-gigabyte KV checkpoint — and everything in them (what you tried, what you decided, what broke) is effectively write-only.
 
 `sessions` builds a full-text search index over all of it and makes that history useful in three ways:
 
-- **Search & resume (CLI)** — fuzzy-find any past session across all five tools, ranked by relevance, and jump back in.
+- **Search & resume (CLI)** — fuzzy-find any past session across all six tools, ranked by relevance, and jump back in.
 - **Agent memory (MCP)** — agents search your history, pull a repo-scoped context primer when you return to a codebase, and answer "what did I do last week?" via bundled skills.
 - **Usage reports** — a token/cost dashboard across tools, models, and projects.
 
@@ -131,7 +131,7 @@ sessions memory import <p>   # Merge another author's bundle in as candidates
 | `uninstall`            | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                                                                                                                                                                                                                                                                                                                  |
 | `cleanup`              | Full reset: uninstall plugin + clear search index                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `--here`               | Scope to the current git repo (default: all projects)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, `omp`, or `opencode`                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, `omp`, `opencode`, or `ds4`                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `--errored`            | Only show sessions that hit an error                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `--file <path>`        | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                                                                                                                                                                                                                                                                                                                           |
 | `--mcp`                | Start as an MCP server (stdio transport)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -175,7 +175,7 @@ When you pick a session, `sessions` displays the resume command and copies it to
   (copied to clipboard)
 ```
 
-For Claude Code sessions, the command includes `--resume <session-id>`; for OpenCode, `opencode --session <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+For Claude Code sessions, the command includes `--resume <session-id>`; for OpenCode, `opencode --session <session-id>`; for omp, `omp --resume <session-id>`; for ds4-agent, it opens the agent and names the `/switch <sha>` command to run inside it. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
 
 ## Agent memory
 
@@ -315,7 +315,7 @@ The selected period is shown prominently at the top of both outputs (and in the 
 | `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                                                     |
 | `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                                                               |
 | `--month YYYY-MM`                                                           | A specific calendar month.                                                                                                                      |
-| `--tool claude\|codex\|pi\|omp\|opencode`                                   | Restrict to one tool. Default: all five.                                                                                                        |
+| `--tool claude\|codex\|pi\|omp\|opencode`                                   | Restrict to one tool. Default: all five. ds4-agent is local-only and has no cost to report.                                                     |
 | `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                                                  |
 | `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                                                           |
 | `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                                                     |
@@ -366,7 +366,7 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 
 ### Session discovery
 
-`sessions` reads JSONL session files (and OpenCode's SQLite database) from these locations:
+`sessions` reads JSONL session files (plus OpenCode's SQLite database and ds4-agent's KV checkpoints) from these locations:
 
 | Tool        | Location                              |
 | ----------- | ------------------------------------- |
@@ -375,6 +375,23 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 | omp         | `~/.omp/agent/sessions/`              |
 | Codex       | `~/.codex/sessions/`                  |
 | OpenCode    | `~/.local/share/opencode/opencode.db` |
+| ds4-agent   | `~/.ds4/kvcache/*.kv`                 |
+
+ds4-agent writes no transcript log at all: a saved session is a KV-cache checkpoint,
+100 MB – 2.5 GB of model state wrapped around the rendered conversation. `sessions`
+reads only the header and that embedded transcript, never the payload. Three
+consequences follow from what the format does not record:
+
+- **No working directory.** ds4-agent stores none, so the project is inferred from the
+  paths the session touched (the shared git root, else the most-used directory, else a
+  `cd` target). A session that touched nothing absolute is filed under `~/.ds4/kvcache`
+  — still searchable, never a false match for a repo scope.
+- **No per-message timestamps.** Every turn carries the session's start time, so a
+  session resumed across days is bucketed to the day it began.
+- **No token accounting or cost.** ds4-agent runs a local model, so it is excluded from
+  `sessions report` and `sessions wrapped`.
+
+Only explicitly saved sessions (`/save` in the agent) exist on disk to be indexed.
 
 Each session file is parsed to extract:
 

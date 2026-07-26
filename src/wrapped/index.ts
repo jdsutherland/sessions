@@ -53,6 +53,8 @@ export interface WrappedResult {
   json: string;
 }
 
+// ds4-agent is absent for the same reason as in src/report/index.ts: a local model
+// with no per-message token accounting has nothing to wrap.
 const TOOL_MAP: Record<string, ToolId> = {
   claude: 'claude-code',
   codex: 'codex',
@@ -119,7 +121,13 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
-        if (!mapped) die('--tool must be claude|codex|pi|opencode|omp');
+        if (!mapped) {
+          die(
+            v === 'ds4'
+              ? 'ds4-agent runs a local model and records no per-message token usage, so it has no wrapped stats'
+              : '--tool must be claude|codex|pi|opencode|omp',
+          );
+        }
         opts.tool = mapped;
         break;
       }

@@ -34,6 +34,7 @@ import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
+import { discoverDs4Sessions, ds4SessionId } from './ds4';
 import { readSessionLines, statSession } from './session-io';
 // The same cap the search projection uses. Aliased at the import so the name reads as the
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
@@ -331,10 +332,12 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  // OpenCode has no per-session files — sessions live in one SQLite DB, so each
-  // discovered "file" is a synthetic dbPath/sessionId handle (see src/opencode.ts).
-  // Returns [] when the DB is absent.
+  // Neither OpenCode nor ds4 has a plain per-session JSONL file: OpenCode keeps
+  // every session in one SQLite DB (each discovered "file" is a synthetic
+  // dbPath/sessionId handle), while ds4 embeds its transcript in a multi-gigabyte
+  // KV checkpoint. Both return [] when their source is absent.
   entries.push(...discoverOpencodeSessions());
+  entries.push(...discoverDs4Sessions());
 
   return entries;
 }
@@ -413,7 +416,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   if (!metadata.cwd) return ignore();
   if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
 
-  const sessionId = basename(filePath).replace('.jsonl', '');
+  const sessionId = tool === 'ds4' ? ds4SessionId(filePath) : basename(filePath).replace('.jsonl', '');
   const messages = extractMessages(lines);
   const summary = summarizeMessages(messages);
   const subagentContent = collectSubagentText(filePath, tool);

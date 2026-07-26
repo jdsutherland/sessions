@@ -12,6 +12,8 @@ const claudeDir = join(fixtureRoot, 'claude');
 const piDir = join(fixtureRoot, 'pi');
 const codexDir = join(fixtureRoot, 'codex');
 const cacheDir = join(fixtureRoot, 'cache');
+const ompDir = join(fixtureRoot, 'omp');
+const ds4Dir = join(fixtureRoot, 'ds4'); // absent → no ds4 sessions leak in
 const opencodeDb = join(fixtureRoot, 'opencode.db'); // absent → no OpenCode sessions leak in
 for (const d of [claudeDir, piDir, codexDir, cacheDir]) mkdirSync(d, { recursive: true });
 
@@ -19,6 +21,8 @@ process.env.SESSIONS_CLAUDE_DIR = claudeDir;
 process.env.SESSIONS_PI_DIR = piDir;
 process.env.SESSIONS_CODEX_DIR = codexDir;
 process.env.SESSIONS_CACHE_DIR = cacheDir;
+process.env.SESSIONS_OMP_DIR = ompDir;
+process.env.SESSIONS_DS4_DIR = ds4Dir;
 process.env.SESSIONS_OPENCODE_DB = opencodeDb;
 
 const cache = await import('./cache');
@@ -31,6 +35,8 @@ beforeEach(() => {
   process.env.SESSIONS_PI_DIR = piDir;
   process.env.SESSIONS_CODEX_DIR = codexDir;
   process.env.SESSIONS_CACHE_DIR = cacheDir;
+  process.env.SESSIONS_OMP_DIR = ompDir;
+  process.env.SESSIONS_DS4_DIR = ds4Dir;
   process.env.SESSIONS_OPENCODE_DB = opencodeDb;
   cache.closeDb();
 });

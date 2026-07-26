@@ -6,6 +6,7 @@ import { type Tool, type SessionResult } from './types';
 import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches, findMatchContext } from './parser';
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
+import { discoverDs4Sessions, ds4SessionId } from './ds4';
 import { readSessionLines } from './session-io';
 import { getPiSessionsDir } from './paths';
 
@@ -38,7 +39,7 @@ async function processSession(
   if (cwd.includes('.claude/worktrees') || cwd.includes('/.bare')) return null;
 
   const metadata = extractSessionMetadata(lines, tool);
-  const sessionId = basename(filePath).replace('.jsonl', '');
+  const sessionId = tool === 'ds4' ? ds4SessionId(filePath) : basename(filePath).replace('.jsonl', '');
 
   if (searchQuery) {
     if (!contentMatches(lines, searchQuery)) return null;
@@ -158,6 +159,9 @@ export async function scanSessions(
   if (toolFilter === '' || toolFilter === 'opencode') {
     scans.push(scanOpencode(repoRoot, searchAll, normalizedQuery));
   }
+  if (toolFilter === '' || toolFilter === 'ds4') {
+    scans.push(scanDs4(repoRoot, searchAll, normalizedQuery));
+  }
 
   const all = (await Promise.all(scans)).flat();
   all.sort((a, b) => (b.date > a.date ? 1 : b.date < a.date ? -1 : 0));
@@ -169,6 +173,16 @@ async function scanOpencode(repoRoot: string, searchAll: boolean, searchQuery: s
   const results: SessionResult[] = [];
   for (const s of discoverOpencodeSessions()) {
     const r = await processSession(s.path, 'opencode', repoRoot, searchAll, searchQuery);
+    if (r) results.push(r);
+  }
+  return results;
+}
+
+/** No-index fallback for ds4: decode each KV checkpoint's transcript, then filter as usual. */
+async function scanDs4(repoRoot: string, searchAll: boolean, searchQuery: string): Promise<SessionResult[]> {
+  const results: SessionResult[] = [];
+  for (const s of discoverDs4Sessions()) {
+    const r = await processSession(s.path, 'ds4', repoRoot, searchAll, searchQuery);
     if (r) results.push(r);
   }
   return results;

@@ -7,6 +7,10 @@ export function buildResumeCommand(tool: Tool, cwd: string, sessionId: string): 
   if (tool === 'claude') return `cd "${cwd}" && claude --resume ${sessionId}`;
   if (tool === 'opencode') return `cd "${cwd}" && opencode --session ${sessionId}`;
   if (tool === 'omp') return `cd "${cwd}" && omp --resume ${sessionId}`;
+  // ds4-agent has no resume flag — sessions are reopened from inside the REPL with
+  // /switch <sha-prefix> (ds4_agent.c: agent_worker_switch_session), which accepts
+  // any unambiguous prefix, and its own completion offers 8 characters.
+  if (tool === 'ds4') return `cd "${cwd}" && ds4-agent  # then: /switch ${sessionId.slice(0, 8)}`;
   return `cd "${cwd}"`; // pi, codex: no direct session resume
 }
 

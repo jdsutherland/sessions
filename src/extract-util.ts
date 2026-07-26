@@ -105,11 +105,12 @@ export function isGenuineUserTurn(d: MessageLine, strippedText: string): boolean
 }
 
 /**
- * OpenCode content blocks of every assistant turn, in order — the one place the
- * OpenCode extractors (files, commands, errors) share their traversal of the
- * synthesized `{type:'message', message:{role:'assistant', content:[…]}}` shape.
+ * Content blocks of every assistant turn, in order — the one place the extractors
+ * (files, commands, errors) share their traversal of the synthesized
+ * `{type:'message', message:{role:'assistant', content:[…]}}` shape that both the
+ * OpenCode and ds4 bridges emit.
  */
-export function opencodeAssistantBlocks(lines: string[]): Record<string, unknown>[] {
+export function synthesizedAssistantBlocks(lines: string[]): Record<string, unknown>[] {
   const blocks: Record<string, unknown>[] = [];
   for (const line of lines) {
     const d = tryParse(line);
