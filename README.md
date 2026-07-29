@@ -80,13 +80,14 @@ sessions setup
     /standup           Yesterday + today activity for standups
     /recall            What did I do on a specific project?
     /session-metrics   Usage dashboard with tool breakdown
+    /memory            Triage durable facts mined from past sessions
 
   Run `sessions setup` again after upgrading to update skills.
 ```
 
 After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
 
-To remove everything: `sessions uninstall`
+To remove the plugin, the MCP config, and the SessionStart hook: `sessions uninstall`. It removes only what the installer created — durable data in `~/.local/share/sessions` (memory triage decisions) is left alone.
 
 ## CLI: search & resume
 
@@ -100,26 +101,42 @@ sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions report              # Usage report (HTML dashboard, opens in browser)
+sessions memory mine         # Mine past sessions for durable facts (JSON on stdout)
+sessions memory mine --since-last # ...only transcripts changed since the last mine
+sessions memory pending      # Count + preview the candidates awaiting triage
+sessions memory approve <id> # Keep a mined candidate as a durable memory
+sessions memory approve <id> --always-on          # ...and exempt it from topic filtering
+sessions memory approve <id> --scope group:authkit # ...and scope it to a project group
+sessions memory reject <id>  # Dismiss a candidate; it stops being emitted
+sessions memory snooze <id>  # Hide a candidate without rejecting it
+sessions memory merge <id> <id>...  # Fold paraphrases into the first id
+sessions memory export       # Write approved memories as a portable bundle (JSON)
+sessions memory import <p>   # Merge another author's bundle in as candidates
 ```
 
 ### Options
 
-| Flag / Command     | Description                                                                                                                                                          |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                         |
-| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id |
-| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                        |
-| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                             |
-| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
-| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                    |
-| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                               |
-| `--errored`        | Only show sessions that hit an error                                                                                                                                 |
-| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                              |
-| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                             |
-| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                       |
-| `--no-color`       | Disable colored output                                                                                                                                               |
-| `-h`, `--help`     | Show help                                                                                                                                                            |
+| Flag / Command         | Description                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context`              | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                                                                                                                                                                               |
+| `digest <session>`     | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                                                                                                                                                                                       |
+| `report`               | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                                                                                                                                                                              |
+| `memory mine`          | Mine past sessions for durable facts worth remembering and print the candidate batch as JSON. `--repo <path>` scopes to one repo container (default: the current repo); `--all` mines every repo; `--since-last` mines only transcripts whose mtime or size changed since the previous mine, so a repeat run over an unchanged corpus emits an empty batch |
+| `memory pending`       | Print the untriaged backlog as JSON: the true candidate count plus the first five texts. Reads the store only — it never mines, which is what makes it cheap enough for `/weekly-summary` to call                                                                                                                                                          |
+| `memory <action>`      | Record a triage decision by the `id` from the mine's batch: `approve <id>`, `reject <id>` (never emitted again), or `snooze <id>` (hidden until the snooze expires **and** a later `merge` adds a phrasing that was not there before). `approve` also takes `--always-on` and `--scope group:<name>` — see [Project groups](#project-groups)               |
+| `memory export`        | Write approved memories as a portable JSON bundle on stdout; `--out <path>` writes a file. Approved records only, with session paths and repo paths stripped — no local paths leave the machine                                                                                                                                                            |
+| `memory import <path>` | Merge a bundle from another author in as candidates to triage. Never lands as approved and never overwrites your own approve/reject decisions                                                                                                                                                                                                              |
+| `setup`                | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                                                                                                                                                                                   |
+| `uninstall`            | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                                                                                                                                                                           |
+| `cleanup`              | Full reset: uninstall plugin + clear search index                                                                                                                                                                                                                                                                                                          |
+| `--here`               | Scope to the current git repo (default: all projects)                                                                                                                                                                                                                                                                                                      |
+| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                                                                                                                                                                                     |
+| `--errored`            | Only show sessions that hit an error                                                                                                                                                                                                                                                                                                                       |
+| `--file <path>`        | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                                                                                                                                                                                    |
+| `--mcp`                | Start as an MCP server (stdio transport)                                                                                                                                                                                                                                                                                                                   |
+| `--clear-cache`        | Remove the search index (rebuilds on next use)                                                                                                                                                                                                                                                                                                             |
+| `--no-color`           | Disable colored output                                                                                                                                                                                                                                                                                                                                     |
+| `-h`, `--help`         | Show help                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Browsing
 
@@ -176,17 +193,18 @@ For Claude Code sessions, the command includes `--resume <session-id>`; for Open
 
 ### MCP tools
 
-The MCP server exposes seven tools:
+The MCP server exposes eight tools:
 
-| Tool                   | Description                                                                                                                                                                                                                                                                               |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_sessions`      | Ranked, top-k search across sessions by keyword; each result includes snippets, files/commands, an errored flag, a resume command, and `messageHits` — the specific matching messages (index, role, snippet). A `files` filter answers "which sessions touched this file?" (newest first) |
-| `grep_sessions`        | Exhaustive literal-or-regex match over every indexed message — for "every time I said X", counts, or exact patterns where ranked search would miss some. Returns `totalHits`/`totalSessions` and hit snippets; each hit's `msgIndex` feeds `get_session_messages` directly                |
-| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit — pass a `messageHits[].index` from search (or a `grep_sessions` hit's `msgIndex`, or an `exchanges[].index` from the digest) as the offset. `include_tools` annotates each turn with the assistant's tool calls |
-| `get_session_digest`   | The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with its exchange's final assistant reply. Long sessions elide middle exchanges, never the ends                                                                                              |
-| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                                             |
-| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                                                                                                                                                                                      |
-| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                              |
+| Tool                   | Description                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_sessions`      | Ranked, top-k search across sessions by keyword; each result includes snippets, files/commands, an errored flag, a resume command, and `messageHits` — the specific matching messages (index, role, snippet). A `files` filter answers "which sessions touched this file?" (newest first)                                                      |
+| `grep_sessions`        | Exhaustive literal-or-regex match over every indexed message — for "every time I said X", counts, or exact patterns where ranked search would miss some. Returns `totalHits`/`totalSessions` and hit snippets; each hit's `msgIndex` feeds `get_session_messages` directly                                                                     |
+| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit — pass a `messageHits[].index` from search (or a `grep_sessions` hit's `msgIndex`, or an `exchanges[].index` from the digest) as the offset. `include_tools` annotates each turn with the assistant's tool calls                                                      |
+| `get_session_digest`   | The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with its exchange's final assistant reply. Long sessions elide middle exchanges, never the ends                                                                                                                                                   |
+| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                                                                                                  |
+| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                                                                                                                                                                                                                                           |
+| `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                                                                                   |
+| `get_memory`           | Approved standing instructions and durable facts for this repo, its project groups, and cross-repo workflow rules — a bounded set of short sentences to read before starting a task. An optional `topic` narrows the result to what is relevant to the task at hand; memory approved with `--always-on` are returned regardless and come first |
 
 Together these support the recall flow the bundled skills teach: `search_sessions` (ranked) or `grep_sessions` (exhaustive) localizes the hit to a message, the digest gives a session's whole arc in one call, and targeted message reads expand only the exchanges that matter — no paging full transcripts.
 
@@ -194,17 +212,55 @@ The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (defau
 
 ### Skills
 
-The plugin ships five skills that compose the MCP tools into repeatable workflows:
+The plugin ships six skills that compose the MCP tools (and, for `/memory`, the CLI) into repeatable workflows:
 
-| Skill              | Trigger                                     | What it does                                                                               |
-| ------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `/context`         | "what was I doing here", "catch me up"      | Repo-scoped primer: prior decisions, dead ends, the open thread                            |
-| `/recall`          | "what did I do on [project]"                | Searches by topic or file, digests the best candidates, expands only the matched exchanges |
-| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack                               |
-| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report                          |
-| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap                               |
+| Skill              | Trigger                                     | What it does                                                                                                    |
+| ------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `/context`         | "what was I doing here", "catch me up"      | Repo-scoped primer: prior decisions, dead ends, the open thread                                                 |
+| `/recall`          | "what did I do on [project]"                | Searches by topic or file, digests the best candidates, expands only the matched exchanges                      |
+| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack                                                    |
+| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report, then nudges toward any new memory candidates |
+| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap                                                    |
+| `/memory`          | "triage memory", "review memory"            | Runs the mine, clusters paraphrases, merges them, and walks approve / reject / snooze                           |
 
 Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
+
+### Project groups
+
+A memory's scope is normally derived: a fact seen in one repo container is `repo`-scoped, one seen across unrelated containers is `workflow`-scoped. A **project group** is the tier in between — a fact true of several related repos, but not of everything.
+
+Group membership cannot be derived from your session history, so it comes from a config file at `~/.local/share/sessions/groups.json` (or `$SESSIONS_DATA_DIR/groups.json`). Nothing writes it for you; create it yourself:
+
+```json
+{
+  "groups": {
+    "authkit": ["~/Developer/authkit-*"],
+    "workos-cli": ["~/Developer/cli/*"]
+  }
+}
+```
+
+Each group maps a name to a list of path globs matched against the resolved repo container. `~` expands to your home directory, and a subdirectory of a match counts as a member — working in `~/Developer/authkit-session/packages/core` puts you in `authkit`.
+
+Then assign a group at triage time:
+
+```bash
+sessions memory approve <id> --scope group:authkit
+```
+
+The file is never read from inside a repo, and it is never required. If it is missing, malformed, or does not mention a memory's group, retrieval quietly degrades to repo-plus-workflow rather than failing — but that also means a group memory with no matching config is silently never returned, so check the file if a group memory is not showing up.
+
+### Topic filtering and standing constraints
+
+`get_memory` takes an optional `topic`. When present, the returned set is narrowed to memory whose text overlaps the topic, so an agent about to work on authentication does not spend context on your build conventions. Omitting `topic` returns everything, exactly as before.
+
+Some facts must never be filtered out — "canary is the mainline branch" has to reach the agent whether or not the task description mentions branching. Approve those with `--always-on`:
+
+```bash
+sessions memory approve <id> --always-on
+```
+
+An always-on memory is returned for every topic and sorts first, so an agent that truncates drops the conditional tail rather than the invariants. It still respects state and scope: rejected, snoozed, and out-of-scope memories are never returned. The flag is set-only — approving again without it does not clear it.
 
 ### Context primer
 

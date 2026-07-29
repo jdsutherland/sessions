@@ -90,6 +90,12 @@ if (command === 'digest') {
   process.exit(0);
 }
 
+if (command === 'memory') {
+  const { runMemory } = await import('./src/memory/cli.ts');
+  await runMemory(Bun.argv.slice(3));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

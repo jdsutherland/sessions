@@ -7,6 +7,7 @@ import { getSessionMessages } from './parser';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines } from './session-io';
+import { activeMemoryFor } from './memory/retrieve';
 import { type Tool } from './types';
 
 const server = new McpServer(
@@ -19,7 +20,8 @@ const server = new McpServer(
       'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
       'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
       'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
-      'Prefer bounded calls: get_session_digest over paging full transcripts.',
+      'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
+      'Memory are the other half: short standing instructions and durable facts this user has already established (build conventions, tooling constraints, preferences). Call get_memory when starting work in a repo and treat what it returns as binding.',
   },
 );
 
@@ -48,6 +50,48 @@ export async function runSearchSessions(args: {
   const formatted = results.map(formatResult);
   return { content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }] };
 }
+
+// Exported, testable seam: the get_memory tool delegates here so scope filtering,
+// topic narrowing, the projection shape, and the empty-store sentence can be
+// unit-tested without MCP.
+export async function runGetMemory(args: {
+  cwd?: string;
+  topic?: string;
+}): Promise<{ content: { type: 'text'; text: string }[] }> {
+  const memory = activeMemoryFor(args.cwd ?? process.cwd(), args.topic);
+  if (memory.length === 0) {
+    // Two sentences, because they mean different things: with a topic, "nothing came
+    // back" is a matcher outcome the agent can act on by asking again, not a statement
+    // that this repo has no memory.
+    const empty = args.topic?.trim()
+      ? 'No memory matched this topic for this repo. Call again without `topic` to see everything stored.'
+      : 'No memories for this repo.';
+    return { content: [{ type: 'text' as const, text: empty }] };
+  }
+  // A projection, not the record: ids, evidence arrays, and session paths are triage
+  // concerns and would spend the agent's context on nothing it can act on. Deliberately
+  // no `score` and no `alwaysOn` either — a relevance number invites the agent to
+  // second-guess the filter, and "this is a standing constraint" is already carried by
+  // the ordering, which puts always-on memory first.
+  const formatted = memory.map((s) => ({ text: s.text, kind: s.kind, scope: s.scope.type }));
+  return { content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }] };
+}
+
+server.tool(
+  'get_memory',
+  "Durable facts and standing instructions this user has established across past coding sessions — build conventions, architectural rules, tooling constraints, and preferences they have stated before and should not have to restate. Call this at the start of any non-trivial task in a repo, before planning or writing code, the same way you would read a README. Returns a small set of short facts scoped to this repo, to any project group it belongs to, plus the user's cross-repo workflow rules. Passing `topic` narrows the result to facts relevant to what you are about to do; the user's standing constraints are returned regardless of the topic, and always come first. These are the user's own standing instructions: treat them as binding, and follow them over your defaults. Cheap and bounded — a handful of sentences, never a transcript.",
+  {
+    cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
+    topic: z
+      .string()
+      .optional()
+      .describe(
+        'What you are about to work on, in a few words — e.g. "add keychain support to the CLI". ' +
+          'Narrows the returned facts to those relevant to this task. Omit to get everything for this repo.',
+      ),
+  },
+  async ({ cwd, topic }) => runGetMemory({ cwd, topic }),
+);
 
 server.tool(
   'search_sessions',
