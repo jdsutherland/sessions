@@ -1,8 +1,10 @@
 // Arg parsing and dispatch for the `memory` command group. Phase 1 shipped `mine`;
 // Phase 2 adds approve/reject/snooze, Phase 4 adds export/import.
 //
-// The batch JSON goes to stdout and everything human-readable goes to stderr —
-// that split is what makes `sessions memory mine | <agent>` a usable interface.
+// Prose on stdout by default, the JSON batch on stdout under `--json`, and progress
+// on stderr either way. The default flipped once a human ran `memory mine` at a
+// terminal and got several hundred lines of records: the batch is the /memory skill's
+// interface, and `sessions memory mine --json | <agent>` still pipes exactly as before.
 
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -10,6 +12,7 @@ import { resolve as resolvePath } from 'node:path';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, mine } from './mine';
+import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord } from './portable';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
 import {
@@ -41,17 +44,23 @@ function help(): never {
   process.stderr.write(`sessions memory — mine durable facts out of past sessions
 
 Narrows past user turns to corrective-shaped candidates, collapses repeats, and
-emits a candidate batch as JSON on stdout for an agent to triage. Candidates are
-also written to a durable store (~/.local/share/sessions/memory.db) that survives
---clear-cache and cleanup.
+lists them. Candidates are also written to a durable store
+(~/.local/share/sessions/memory.db) that survives --clear-cache and cleanup.
+
+Deciding on them is \`/memory\`'s job, not yours: it clusters paraphrases, drops
+what CLAUDE.md already says, writes the fact rather than the utterance, and runs
+the commands below for you. \`--json\` is the seam it reads.
 
 Usage:
   sessions memory mine             Mine the current repo
   sessions memory mine --all       Mine every repo in the index
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
+  sessions memory documented       What is already binding here (CLAUDE.md,
+                                   AGENTS.md, Claude Code's own memory store)
   sessions memory approve <id>     Keep a candidate as a durable memory
-                                   (--always-on, --scope group:<name>|repo:<path>)
+                                   (--as "<text>", --always-on,
+                                    --scope group:<name>|repo:<path>)
   sessions memory reject <id>      Dismiss a candidate; it stops being emitted
   sessions memory snooze <id>      Hide a candidate without rejecting it
   sessions memory merge <id> <id>...  Fold paraphrases into the first id
@@ -62,8 +71,15 @@ Options:
   --repo <path>         Scope to one repo container (default: the current repo)
   --all                 Mine every repo in the index
   --since-last          Mine only sessions changed since the last mine
-  --json                Emit the candidate batch as JSON on stdout (the default)
+  --json                Emit the machine-readable batch on stdout. The default is
+                        a prose listing — the JSON is the seam the /memory skill
+                        parses, not something to read at a terminal
   --out <path>          Write the export bundle to a file instead of stdout
+  --as "<text>"         (approve) Store this phrasing instead of the mined
+                        utterance. A mined candidate is a verbatim user turn and
+                        is often a question rather than the fact it implies; this
+                        is where the triage skill writes the fact itself. The
+                        original is kept as evidence, not discarded
   --always-on           (approve) Return this memory for every topic, and first
   --scope group:<name>  (approve) Assign a project group, not the derived scope
   --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
@@ -128,6 +144,8 @@ export interface MineArgs {
    * asserted verbatim in cli.test.ts.
    */
   sinceLast?: boolean;
+  /** `--json` was passed: emit the machine-readable batch instead of the prose listing. */
+  json?: boolean;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
@@ -158,8 +176,9 @@ export function parseMineArgs(argv: string[]): MineArgs {
         args.sinceLast = true;
         break;
       case '--json':
-        // JSON on stdout is unconditional — the batch is the interface. Accepted
-        // so the documented invocation works and stays explicit at call sites.
+        // The AGENT seam, now explicit. Prose is the default because a human at a
+        // terminal was the one getting several hundred lines of records.
+        args.json = true;
         break;
       default:
         throw new UsageError(`unknown option: ${a}`);
@@ -180,6 +199,8 @@ export interface TriageArgs {
   /** `--scope group:<name>` or `--scope repo:<path>` was passed. A repo key is still the
    *  RAW path here — `canonicalizeScope` resolves it, because this parser does no I/O. */
   scope?: MemoryScope;
+  /** `--as "<text>"`: store this phrasing instead of the mined utterance. */
+  as?: string;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
@@ -272,6 +293,14 @@ export function parseTriageArgs(argv: string[]): TriageArgs {
       const value = argv[++i];
       if (!value) throw new UsageError('--scope requires a value (group:<name>)');
       args.scope = parseScopeValue(value);
+    } else if (a === '--as') {
+      // Consumed positionally rather than checked for a leading dash: a canonical
+      // phrasing legitimately starts with one ("--json is the agent seam"), and rejecting
+      // that would make the flag unusable for exactly the sentences worth storing.
+      const value = argv[++i];
+      if (value === undefined) throw new UsageError('--as requires the phrasing to store, in quotes');
+      if (!value.trim()) throw new UsageError('--as needs a non-empty phrasing');
+      args.as = value;
     } else if (a.startsWith('-')) {
       throw new UsageError(`unknown option: ${a}`);
     } else if (args.id !== undefined) {
@@ -341,6 +370,8 @@ export function parseImportArgs(argv: string[]): ImportArgs {
 }
 
 export interface PendingArgs {
+  /** `--json` was passed: emit the machine-readable batch instead of the prose listing. */
+  json?: boolean;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
@@ -352,15 +383,13 @@ export interface PendingArgs {
  * this subcommand must reject, and `pending` deliberately takes nothing but `--json`.
  */
 export function parsePendingArgs(argv: string[]): PendingArgs {
+  const args: PendingArgs = { help: false };
   for (const a of argv) {
     if (a === '-h' || a === '--help') return { help: true };
-    // Accepted and ignored, exactly as on `mine`: JSON on stdout is unconditional
-    // because the batch is the interface. The flag exists so the documented
-    // invocation works and stays explicit at call sites.
-    if (a === '--json') continue;
-    throw new UsageError(`unknown option: ${a}`);
+    if (a === '--json') args.json = true;
+    else throw new UsageError(`unknown option: ${a}`);
   }
-  return { help: false };
+  return args;
 }
 
 /** How many candidate texts the pending payload previews. The count is the true total. */
@@ -405,9 +434,14 @@ async function runPending(argv: string[]): Promise<void> {
   const args = parsePendingArgs(argv);
   if (args.help) help();
 
-  const batch = pendingBatch(listMemories({ state: 'candidate' }));
-  await writeStdoutFully(JSON.stringify(batch, null, 2) + '\n');
-  process.stderr.write(`  ${batch.count} candidate${batch.count === 1 ? '' : 's'} awaiting triage\n`);
+  const candidates = listMemories({ state: 'candidate' });
+  if (args.json) {
+    const batch = pendingBatch(candidates);
+    await writeStdoutFully(JSON.stringify(batch, null, 2) + '\n');
+    process.stderr.write(`  ${batch.count} candidate${batch.count === 1 ? '' : 's'} awaiting triage\n`);
+    return;
+  }
+  await writeStdoutFully(renderBatch(candidates) + '\n');
 }
 
 /**
@@ -524,15 +558,19 @@ async function runMine(argv: string[]): Promise<void> {
   // their evidence refreshed; only the batch narrows.
   const batch = dropSuppressed(records, suppressed, todayIso());
 
-  await writeStdoutFully(JSON.stringify(batch, null, 2) + '\n');
-  const fresh = batch.filter((r) => r.state === 'candidate').length;
   const hidden = records.length - batch.length;
-  process.stderr.write(
-    `  ${batch.length} candidate${batch.length === 1 ? '' : 's'}` +
-      (fresh === batch.length ? '' : ` (${fresh} untriaged)`) +
-      (hidden > 0 ? `, ${hidden} suppressed` : '') +
-      '\n',
-  );
+  if (args.json) {
+    await writeStdoutFully(JSON.stringify(batch, null, 2) + '\n');
+    const fresh = batch.filter((r) => r.state === 'candidate').length;
+    process.stderr.write(
+      `  ${batch.length} candidate${batch.length === 1 ? '' : 's'}` +
+        (fresh === batch.length ? '' : ` (${fresh} untriaged)`) +
+        (hidden > 0 ? `, ${hidden} suppressed` : '') +
+        '\n',
+    );
+    return;
+  }
+  await writeStdoutFully(renderBatch(batch, { suppressed: hidden }) + '\n');
 }
 
 /**
@@ -551,6 +589,7 @@ export function assertActionAcceptsFlags(action: TriageAction, args: TriageArgs)
   if (action === 'approve') return;
   if (args.alwaysOn) throw new UsageError(`${action} does not take --always-on (it applies to approve only)`);
   if (args.scope) throw new UsageError(`${action} does not take --scope (it applies to approve only)`);
+  if (args.as) throw new UsageError(`${action} does not take --as (it applies to approve only)`);
 }
 
 /**
@@ -604,9 +643,13 @@ function runTriage(action: TriageAction, argv: string[]): void {
       // Resolved here rather than in the parser: this is the I/O layer, and the failure it
       // can raise (a path that is not a repo) must reach the user before anything is written.
       const scope = args.scope ? canonicalizeScope(args.scope) : undefined;
-      approve(id, { alwaysOn: args.alwaysOn, scope });
+      // `approve` returns the id that now carries the fact, which differs from the one
+      // passed in whenever --as rewrote the text. Reporting the argument instead would
+      // print an id that is no longer the canonical row.
+      const kept = approve(id, { alwaysOn: args.alwaysOn, scope, as: args.as });
       const notes = [args.alwaysOn ? 'always-on' : '', scope ? `scope ${scope.type}:${scope.key}` : ''].filter(Boolean);
-      process.stderr.write(`  approved ${id}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
+      process.stderr.write(`  approved ${kept}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
+      if (kept !== id) process.stderr.write(`  rephrased — ${id} folded in as evidence\n`);
       return;
     }
     case 'reject':
@@ -721,6 +764,130 @@ function runImport(argv: string[]): void {
   }
 }
 
+/** How many records the human listing prints before it stops and points at the skill. */
+export const HUMAN_LIST_LIMIT = 20;
+
+/**
+ * A candidate batch as prose.
+ *
+ * The JSON batch is the AGENT seam — the /memory skill parses it, clusters it, and drives
+ * the triage commands. It was also the default, so a human running `sessions memory mine`
+ * got several hundred lines of records at a terminal, which is the interface complaint
+ * that produced this function: unreadable, and it invites hand-running triage commands
+ * that the skill exists to run for you.
+ *
+ * So this is deliberately NOT a rendering of every field. It is a summary plus enough of
+ * each record to recognise it, and it ends by naming `/memory` — because reading the list
+ * is a human job and deciding on 470 of them one `approve` at a time is not.
+ */
+export function renderBatch(records: MemoryRecord[], opts: { suppressed?: number } = {}): string {
+  const untriaged = records.filter((r) => r.state === 'candidate').length;
+  const suppressed = opts.suppressed ?? 0;
+
+  if (records.length === 0) {
+    return suppressed > 0
+      ? `No new candidates. ${suppressed} already triaged and suppressed.`
+      : 'No candidates. Nothing in the mined history looks like a durable fact.';
+  }
+
+  const head = [
+    `${records.length} candidate${records.length === 1 ? '' : 's'}` +
+      (untriaged === records.length ? '' : ` (${untriaged} untriaged)`) +
+      (suppressed > 0 ? `, ${suppressed} suppressed` : ''),
+    '',
+  ];
+
+  for (const r of records.slice(0, HUMAN_LIST_LIMIT)) {
+    const e = r.evidence;
+    const span = e.firstSeen === e.lastSeen ? e.firstSeen : `${e.firstSeen} → ${e.lastSeen}`;
+    const facts = [
+      `${e.distinctPhrasings} phrasing${e.distinctPhrasings === 1 ? '' : 's'}`,
+      `${e.sessions.length} session${e.sessions.length === 1 ? '' : 's'}`,
+      span,
+      r.scope.type,
+      r.state === 'candidate' ? '' : r.state,
+    ].filter(Boolean);
+    head.push(`  ${r.text}`, `    ${facts.join(' · ')}`, `    ${r.id}`, '');
+  }
+
+  if (records.length > HUMAN_LIST_LIMIT) {
+    head.push(`  … ${records.length - HUMAN_LIST_LIMIT} more`, '');
+  }
+  head.push('Run /memory to triage these — it clusters paraphrases and writes the decisions back.');
+  head.push('Add --json for the machine-readable batch.');
+  return head.join('\n');
+}
+
+export interface DocumentedArgs {
+  repo?: string;
+  /** Emit as JSON for the triage skill; default is the human listing. */
+  json?: boolean;
+  help: boolean;
+}
+
+/** Parse `memory documented [--repo <path>] [--json]`. Throws `UsageError`; never exits. */
+export function parseDocumentedArgs(argv: string[]): DocumentedArgs {
+  const args: DocumentedArgs = { help: false };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
+    if (a === '-h' || a === '--help') return { help: true };
+    if (a === '--json') args.json = true;
+    else if (a === '--repo') {
+      const value = argv[++i];
+      if (!value) throw new UsageError('--repo requires a path');
+      args.repo = value;
+    } else throw new UsageError(`unknown option: ${a}`);
+    i++;
+  }
+  return args;
+}
+
+/**
+ * What is already binding on an agent here, so triage can avoid repeating it.
+ *
+ * Read-only over Claude Code's own surfaces. `sessions` never writes to them — the
+ * org rule is that a single-tool memory file is not this tool's to edit, and the
+ * whole point of reading them is that they are already injected without us.
+ */
+async function runDocumented(argv: string[]): Promise<void> {
+  const args = parseDocumentedArgs(argv);
+  if (args.help) help();
+
+  const cwd = args.repo ? resolvePath(args.repo) : process.cwd();
+  const facts = documentedFacts(cwd);
+  const sources = documentedSources(cwd);
+
+  if (args.json) {
+    await writeStdoutFully(JSON.stringify({ cwd, sources, facts }, null, 2) + '\n');
+    process.stderr.write(`  ${facts.length} statement${facts.length === 1 ? '' : 's'} already binding here\n`);
+    return;
+  }
+
+  if (facts.length === 0) {
+    process.stderr.write(
+      '  Nothing found. Looked for CLAUDE.md, AGENTS.md, and Claude Code’s memory store for this repo.\n',
+    );
+    return;
+  }
+
+  const lines: string[] = [`${facts.length} statements already binding in ${cwd}`, ''];
+  let current = '';
+  for (const fact of facts) {
+    if (fact.source !== current) {
+      current = fact.source;
+      lines.push(`  ${current}`);
+    }
+    lines.push(`    - ${fact.text.length > 120 ? `${fact.text.slice(0, 119)}…` : fact.text}`);
+  }
+  lines.push(
+    '',
+    `Read from: ${sources.join(', ')}`,
+    'These are read, never written — a memory that repeats one is noise.',
+  );
+  await writeStdoutFully(lines.join('\n') + '\n');
+}
+
 export async function runMemory(argv: string[]): Promise<void> {
   const sub = argv[0];
   if (!sub || sub === '-h' || sub === '--help') help();
@@ -731,6 +898,9 @@ export async function runMemory(argv: string[]): Promise<void> {
         return;
       case 'pending':
         await runPending(argv.slice(1));
+        return;
+      case 'documented':
+        await runDocumented(argv.slice(1));
         return;
       case 'approve':
       case 'reject':
