@@ -23,6 +23,10 @@ import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
+// The same cap the search projection uses. Aliased at the import so the name reads as the
+// primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
+// (50 — the bound on the indexed files_touched column, a different number for a different job).
+import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -1272,17 +1276,26 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const detailSet = new Set(recentRows);
   const headlineRows = rows.filter((r) => !detailSet.has(r)).slice(0, headlineCap);
 
-  const recent: ContextSession[] = recentRows.map((r) => ({
-    sessionId: r.session_id,
-    tool: r.tool as Tool,
-    branch: r.branch || branchLabel(r.cwd, repo.branches),
-    date: r.date,
-    messageCount: r.message_count,
-    intent: r.custom_title || r.first_prompt,
-    files: parseFiles(r.files_touched),
-    opening: r.first_prompt,
-    closing: { user: r.closing_user, assistant: r.closing_assistant },
-  }));
+  const recent: ContextSession[] = recentRows.map((r) => {
+    // One parse per row: files_touched is a JSON column and the detail tier holds up to
+    // `limit` rows, so parsing it twice (once to cap, once to count) doubles the work on
+    // the primer's hot path for nothing.
+    const files = parseFiles(r.files_touched);
+    return {
+      sessionId: r.session_id,
+      tool: r.tool as Tool,
+      branch: r.branch || branchLabel(r.cwd, repo.branches),
+      date: r.date,
+      messageCount: r.message_count,
+      intent: r.custom_title || r.first_prompt,
+      // Same cap as the search projection: 10 sessions × an unbounded file list was the
+      // primer's version of the search payload problem.
+      files: files.slice(0, MAX_PRIMER_FILES),
+      fileCount: files.length,
+      opening: r.first_prompt,
+      closing: { user: r.closing_user, assistant: r.closing_assistant },
+    };
+  });
 
   const headlines: ContextHeadline[] = headlineRows.map((r) => ({
     date: r.date,
@@ -1292,4 +1305,59 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   }));
 
   return { repoLabel, toolFilter, recent, headlines, isEmpty: false };
+}
+
+/** One indexed session projected to just what an MCP `resources/list` entry needs. */
+export interface RepoSessionRow {
+  session_id: string;
+  tool: string;
+  date: string;
+  /** MAX(created_at) of the id's rows — the ordering key, not display data. */
+  created_at: string;
+  first_prompt: string;
+  custom_title: string;
+}
+
+/**
+ * The newest `limit` sessions in a repo, plus the untruncated total.
+ *
+ * Same boundary-aware scope as getContextPrimer — the container itself or any descendant,
+ * so linked worktrees aggregate while a `…-v2` sibling stays out. Bounded in SQL rather
+ * than in JS as the primer does: MCP clients call `resources/list` speculatively, and
+ * selecting thousands of rows to hand back 50 is exactly the enumeration cost this surface
+ * exists to avoid.
+ *
+ * Grouped by session_id because file_path — not session_id — is the primary key, and a
+ * resource list must never carry the same `sessions://<id>` URI twice. MAX(created_at)
+ * makes the surviving row the newest of a collision (SQLite's bare-column rule), the same
+ * tie-break resolveSessionFile applies by mtime.
+ */
+export async function recentSessionsForRepo(
+  repo: RepoInfo,
+  limit: number,
+): Promise<{ rows: RepoSessionRow[]; totalCount: number }> {
+  const db = getDb();
+  await ensureIndexFresh();
+
+  const root = repo.container;
+  const where = 'WHERE (cwd = ? OR cwd GLOB ?)';
+  const params: [string, string] = [root, globPrefix(root)];
+
+  const rows = db
+    .query<RepoSessionRow, any[]>(
+      `SELECT session_id, tool, date, first_prompt, custom_title, MAX(created_at) AS created_at
+       FROM sessions ${where}
+       GROUP BY session_id
+       ORDER BY created_at DESC, date DESC
+       LIMIT ?`,
+    )
+    .all(...params, limit);
+
+  // COUNT(DISTINCT session_id), not COUNT(*): the total has to be countable against the
+  // grouped rows above, or a repo with a collision reports more sessions than exist.
+  const total = db
+    .query<{ n: number }, [string, string]>(`SELECT COUNT(DISTINCT session_id) AS n FROM sessions ${where}`)
+    .get(...params);
+
+  return { rows, totalCount: total?.n ?? 0 };
 }
