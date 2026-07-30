@@ -1,4 +1,14 @@
-import type { UsageReport, ToolBreakdown, ModelBreakdown, ProjectBreakdown, PricingWarning } from './schema.ts';
+import type {
+  UsageReport,
+  ToolBreakdown,
+  ModelBreakdown,
+  ProjectBreakdown,
+  BranchBreakdown,
+  SessionCost,
+  SubagentReport,
+  CacheStats,
+  PricingWarning,
+} from './schema.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -31,6 +41,64 @@ function formatDate(ymd: string): string {
 
 function periodLabel(from: string, to: string): string {
   return from === to ? formatDate(from) : `${formatDate(from)} → ${formatDate(to)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Glossary — every number on the page can say what it means on hover.
+//
+// These definitions are the only place the report explains its own accounting
+// (which tokens are counted, what the cost is an estimate OF, how a session is
+// counted). Kept in one table so the page and the docs cannot drift apart, and
+// so a reader never has to guess whether "tokens" includes cache reads.
+// ---------------------------------------------------------------------------
+const GLOSSARY = {
+  totalCost:
+    'Estimated from public per-token list prices. If you are on a Pro or Max plan this is what the same usage would have cost through the API, not what you were billed.',
+  tokens:
+    'Input + output + cache writes. Cache reads are excluded: they are context replayed from cache, not new work. Cache volume has its own row below.',
+  sessions:
+    'Distinct sessions counted per day and summed, so a session running past midnight counts on each day it touched.',
+  messages: 'Assistant responses — one per API response, after de-duplicating resumed and forked transcripts.',
+  activeDays: 'Days in the period with at least one message.',
+  hitRate:
+    'Share of prompt-side tokens served from cache rather than re-sent. Higher is better; a falling rate means context is being rebuilt instead of reused.',
+  cacheRead:
+    'Tokens replayed from the prompt cache, billed at roughly a tenth of the input rate. Not included in the token total.',
+  cacheWrite:
+    'Tokens written into the prompt cache, billed at a premium over input. These are new work, so they ARE included in the token total.',
+  saved:
+    'What those cache reads would have cost at full input rates, minus what they actually cost. The value the prompt cache returned over the period.',
+  dailyCost: 'Cost per local calendar day. The tallest bar is labelled.',
+  byHour: 'Assistant messages by local hour, summed across every day in the period.',
+  byWeekday: 'Assistant messages by day of week, summed across the period.',
+  byTool: 'Cost split across the coding tools whose logs were read: Claude Code, Codex, Pi, OpenCode.',
+  byModel:
+    'Cost per model. A model with no published price is flagged in the banner above rather than counted as zero.',
+  byProject: 'Cost per project directory, from each message’s working directory.',
+  byBranch:
+    'Cost per git branch, recorded per message rather than per session — so a session that switched branches is split across them. Effectively cost per feature.',
+  subagents:
+    'Spend by agents dispatched with the Task tool, plus auto-compaction. Their tokens are already inside every total above; this breaks out who spent them.',
+  dispatch: 'One Task/Agent invocation. A dispatch can span many messages.',
+  topSessions:
+    'The costliest individual sessions, named by their custom title or opening prompt from the session index. Sessions the index has not seen show their id.',
+  sessionSubagent: 'How much of that session’s cost was spent by agents it dispatched.',
+  sessionWhere:
+    'The project the session ran in, and the branch it spent the most on. A session that switched branches shows the costliest one.',
+} as const;
+
+const tip = (text: string): string => ` data-tip="${esc(text)}"`;
+
+/** Section heading whose title carries its own definition, with an optional
+ *  right-aligned hint that does not. */
+function h2(title: string, definition: string, hint?: string): string {
+  const hintHtml = hint ? `<span class="hint">${hint}</span>` : '';
+  return `<h2><span class="tt"${tip(definition)}>${esc(title)}</span>${hintHtml}</h2>`;
+}
+
+/** A stat cell in the header grid: big number, small label, one definition. */
+function cell(value: string, label: string, definition: string): string {
+  return `<div class="cell"${tip(definition)}><div class="n">${value}</div><div class="l">${esc(label)}</div></div>`;
 }
 
 interface Bar {
@@ -170,9 +238,23 @@ h2 .hint{font-weight:400;text-transform:none;color:var(--muted);font-size:10.5px
 .barlist .fill{display:block;height:100%;background:var(--accent);}
 .barlist .item.peak .fill{background:var(--ink);}
 .barlist .val{font-family:var(--mono);font-size:11.5px;font-weight:600;}
+.statgrid.sub{border-top-width:3px;margin-top:0;}
+table.tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
+table.tbl th{text-align:left;font-family:var(--mono);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:0 10px 6px 0;border-bottom:1px solid var(--track);white-space:nowrap;}
+table.tbl td{padding:6px 10px 6px 0;border-bottom:1px solid var(--grid);}
+table.tbl th.num,table.tbl td.num{text-align:right;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;padding-right:0;}
+table.tbl td.t{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26em;}
+table.tbl td.dim{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:14em;}
+.trunc{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:9px;}
 svg.bars rect{transition:opacity .15s ease-out;}
 svg.bars rect:hover{opacity:.7;}
-.tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--mono);font-size:11px;padding:4px 7px;border-radius:4px;opacity:0;transform:translate(-50%,-130%);white-space:nowrap;z-index:var(--z-tooltip);}
+.tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--sans);font-size:12px;line-height:1.45;padding:7px 10px;border-radius:5px;opacity:0;transform:translateX(-50%);max-width:34ch;text-wrap:pretty;font-variant-numeric:tabular-nums;z-index:var(--z-tooltip);box-shadow:0 4px 14px color-mix(in oklch,var(--ink) 22%,transparent);}
+/* Affordance: anything with an explanation reads as explainable. Charts opt out —
+   their whole surface is hoverable and a dotted rule under an SVG means nothing. */
+.tt{border-bottom:1px dotted var(--muted);cursor:help;}
+.statgrid .cell[data-tip]{cursor:help;}
+.statgrid .cell[data-tip] .l{border-bottom:1px dotted var(--muted);}
+table.tbl th[data-tip]{cursor:help;text-decoration:underline dotted var(--muted);text-underline-offset:3px;}
 footer.rep{border-top:8px solid var(--rule);margin-top:40px;padding:14px 0 40px;font-family:var(--mono);font-size:11px;display:flex;justify-content:space-between;color:var(--muted);}
 @media (max-width:760px){.cols{grid-template-columns:1fr;gap:30px;}.statgrid{grid-template-columns:repeat(2,1fr);}.statgrid .cell:nth-child(3){border-left:0;padding-left:0;}}
 @media (prefers-reduced-motion:reduce){svg.bars rect,#themetoggle{transition:none;}}
@@ -183,7 +265,10 @@ footer.rep{border-top:8px solid var(--rule);margin-top:40px;padding:14px 0 40px;
 const THEME_BOOT_JS = `(function(){var d=document.documentElement;var t=null;try{t=localStorage.getItem('sessions-report-theme')}catch(e){}if(t!=='light'&&t!=='dark'){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}d.setAttribute('data-theme',t);var A=${ACCENT_NAMES};var a=null;try{a=localStorage.getItem('sessions-report-accent')}catch(e){}if(A.indexOf(a)<0){a=A[Math.floor(Math.random()*A.length)];}d.setAttribute('data-accent',a);})();`;
 
 // Delegated tooltip + theme toggle — textContent only, never innerHTML.
-const JS = `(function(){var t=document.getElementById('tip');function find(e){return e.target&&e.target.closest?e.target.closest('[data-tip]'):null;}document.addEventListener('mousemove',function(e){var el=find(e);if(!el){t.style.opacity='0';return;}t.textContent=el.getAttribute('data-tip');t.style.opacity='1';t.style.left=e.clientX+'px';t.style.top=e.clientY+'px';});
+// Tooltips now carry sentences, not just numbers, so they are measured and
+// clamped: kept inside the viewport horizontally, and flipped below the cursor
+// when there is no room above.
+const JS = `(function(){var t=document.getElementById('tip');function find(e){return e.target&&e.target.closest?e.target.closest('[data-tip]'):null;}document.addEventListener('mousemove',function(e){var el=find(e);if(!el){t.style.opacity='0';return;}t.textContent=el.getAttribute('data-tip');t.style.opacity='1';var r=t.getBoundingClientRect();var half=r.width/2+8;t.style.left=Math.min(Math.max(e.clientX,half),window.innerWidth-half)+'px';var above=e.clientY-r.height-14;t.style.top=(above<8?e.clientY+18:above)+'px';});
 var d=document.documentElement,b=document.getElementById('themetoggle');
 b.addEventListener('click',function(){var next=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',next);try{localStorage.setItem('sessions-report-theme',next)}catch(e){}});
 var A=${ACCENT_NAMES};
@@ -195,13 +280,102 @@ document.addEventListener('click',function(e){if(dd.hasAttribute('open')&&!dd.co
 document.addEventListener('keydown',function(e){if(e.key==='Escape')dd.removeAttribute('open');});
 console.log('sessions report \\u2014 generated locally from your own session logs. No telemetry.');})();`;
 
-// A loud, URL-free banner naming every model that had tokens but no pricing
-// match, so an unpriced model is visible rather than silently counted as $0.
+// A loud, URL-free banner naming every model that had no price of its own. The
+// two cases read differently on purpose: a same-family estimate still produces a
+// number, an unpriced model leaves a hole in the total.
 function warningBanner(warnings: PricingWarning[]): string {
   if (warnings.length === 0) return '';
-  const n = warnings.length;
-  const models = warnings.map((w) => `<span class="m">${esc(w.model)}</span>`).join('');
-  return `<div class="pricewarn" role="alert"><div class="hd">${n} model${n === 1 ? '' : 's'} had no pricing — cost may be understated</div><div class="models">${models}</div></div>`;
+  const estimated = warnings.filter((w) => w.pricedAs);
+  const zeroed = warnings.filter((w) => !w.pricedAs);
+  const block = (head: string, list: PricingWarning[], fmtName: (w: PricingWarning) => string): string =>
+    list.length === 0
+      ? ''
+      : `<div class="pricewarn" role="alert"><div class="hd">${esc(head)}</div><div class="models">${list
+          .map((w) => `<span class="m">${esc(fmtName(w))}</span>`)
+          .join('')}</div></div>`;
+  return (
+    block(
+      `${zeroed.length} model${zeroed.length === 1 ? '' : 's'} had no pricing — cost is understated`,
+      zeroed,
+      (w) => w.model,
+    ) +
+    block(
+      `${estimated.length} model${estimated.length === 1 ? '' : 's'} priced at a same-family estimate`,
+      estimated,
+      (w) => `${w.model} → ${w.pricedAs}`,
+    )
+  );
+}
+
+const fmtPct = (frac: number): string => (frac * 100).toFixed(1) + '%';
+
+// Cache volume sits outside the headline token count (which excludes replayed
+// context by design), so it gets its own strip rather than being folded in.
+function cacheStrip(c: CacheStats): string {
+  return `<div class="statgrid sub">
+${cell(fmtPct(c.hitRate), 'cache hit rate', GLOSSARY.hitRate)}
+${cell(fmtTokens(c.cacheReadTokens), 'cache read', GLOSSARY.cacheRead)}
+${cell(fmtTokens(c.cacheWriteTokens), 'cache write', GLOSSARY.cacheWrite)}
+${cell(fmtUSD(c.savedUSD), 'saved vs uncached', GLOSSARY.saved)}
+</div>`;
+}
+
+function subagentSection(sub: SubagentReport): string {
+  if (sub.dispatches === 0) return '';
+  const byType = barList(
+    sub.byType.slice(0, 8).map((t) => ({
+      name: t.agentType,
+      value: t.costUSD,
+      tip: `${fmtTokens(t.tokens)} tokens · ${t.dispatches} dispatches · ${t.messages} msgs`,
+    })),
+  );
+  const rows = sub.topDispatches
+    .map(
+      (d) =>
+        `<tr><td class="t">${esc(d.agentType)}</td><td class="dim">${esc(d.project)}</td><td class="dim">${esc(d.date)}</td><td class="num">${fmtTokens(d.tokens)}</td><td class="num">${fmtUSD(d.costUSD)}</td></tr>`,
+    )
+    .join('');
+  // Say what the table leaves out — a silent top-N reads as "this is all of them".
+  const trunc =
+    sub.totalDispatches > sub.topDispatches.length
+      ? `<div class="trunc">showing top ${sub.topDispatches.length} of ${fmtInt(sub.totalDispatches)} dispatches · full list in the JSON report</div>`
+      : '';
+  return `<section class="blk">${h2('Subagents', GLOSSARY.subagents, `${fmtPct(sub.shareOfCost)} of spend · ${fmtInt(sub.dispatches)} dispatches`)}
+<div class="cols">
+<div><table class="tbl"><thead><tr><th${tip(GLOSSARY.dispatch)}>Agent type</th><th>Project</th><th>First seen</th><th class="num"${tip(GLOSSARY.tokens)}>Tokens</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</div>
+<div><div class="barlist">${byType}</div></div>
+</div></section>`;
+}
+
+// The one view a dollar total cannot give you: which pieces of work cost the
+// most. Intent comes from the search index; without it the row still carries
+// project, branch, and date, which is usually enough to recognise the session.
+function sessionSection(sessions: SessionCost[], total: number): string {
+  if (sessions.length === 0) return '';
+  const rows = sessions
+    .map((s) => {
+      const where = s.branch ? `${s.project} · ${s.branch}` : s.project;
+      const sub = s.subagentCostUSD > 0 ? `${fmtUSD(s.subagentCostUSD)} sub` : '';
+      return `<tr><td class="t">${esc(s.intent ?? s.sessionId.slice(0, 8))}</td><td class="dim">${esc(where)}</td><td class="dim">${esc(s.date)}</td><td class="num">${esc(sub)}</td><td class="num">${fmtUSD(s.costUSD)}</td></tr>`;
+    })
+    .join('');
+  const trunc =
+    total > sessions.length
+      ? `<div class="trunc">showing top ${sessions.length} of ${fmtInt(total)} sessions · full list in the JSON report</div>`
+      : '';
+  return `<section class="blk">${h2('Most expensive sessions', GLOSSARY.topSessions, 'intent from the session index')}
+<table class="tbl"><thead><tr><th${tip(GLOSSARY.topSessions)}>Session</th><th${tip(GLOSSARY.sessionWhere)}>Project · branch</th><th>Started</th><th class="num"${tip(GLOSSARY.sessionSubagent)}>Subagents</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</section>`;
+}
+
+function branchSection(branches: BranchBreakdown[]): string {
+  if (branches.length === 0) return '';
+  return `<div>${h2('By branch', GLOSSARY.byBranch)}<div class="barlist">${barList(
+    branches.slice(0, 8).map((b) => ({
+      name: b.branch,
+      value: b.costUSD,
+      tip: `${b.project} · ${fmtTokens(b.tokens)} tokens · ${b.sessions} sessions`,
+    })),
+  )}</div></div>`;
 }
 
 export function renderHtml(data: UsageReport): string {
@@ -252,6 +426,10 @@ export function renderHtml(data: UsageReport): string {
     s.currentStreakDays >= 3 && s.currentStreakDays === s.longestStreakDays
       ? `<strong>${s.currentStreakDays}-day streak</strong>, longest yet`
       : `longest streak <b>${s.longestStreakDays} days</b>`;
+  const subNote =
+    data.subagents.dispatches > 0
+      ? ` · <strong>${fmtPct(data.subagents.shareOfCost)}</strong> of it spent by subagents`
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -272,27 +450,31 @@ export function renderHtml(data: UsageReport): string {
 </header>
 ${warningBanner(data.warnings)}
 <div class="heroline">
-<p class="label">Total cost</p>
+<p class="label"><span class="tt"${tip(GLOSSARY.totalCost)}>Total cost</span></p>
 <div class="big"><span class="cur">$</span>${esc(cost.slice(1))}</div>
 <div class="statgrid">
-<div class="cell"><div class="n">${fmtTokens(s.totalTokens)}</div><div class="l">tokens</div></div>
-<div class="cell"><div class="n">${fmtInt(s.sessions)}</div><div class="l">sessions</div></div>
-<div class="cell"><div class="n">${fmtInt(s.messages)}</div><div class="l">messages</div></div>
-<div class="cell"><div class="n">${s.activeDays}</div><div class="l">active days</div></div>
+${cell(fmtTokens(s.totalTokens), 'tokens', GLOSSARY.tokens)}
+${cell(fmtInt(s.sessions), 'sessions', GLOSSARY.sessions)}
+${cell(fmtInt(s.messages), 'messages', GLOSSARY.messages)}
+${cell(String(s.activeDays), 'active days', GLOSSARY.activeDays)}
 </div>
-<p class="note">${streak} · busiest at <b>${esc(hourLabel(s.peakHourLocal))}</b> · top model <strong>${esc(s.favoriteModel.label)}</strong></p>
+${cacheStrip(data.cache)}
+<p class="note">${streak} · busiest at <b>${esc(hourLabel(s.peakHourLocal))}</b> · top model <strong>${esc(s.favoriteModel.label)}</strong>${subNote}</p>
 </div>
-<section class="blk"><h2>Daily cost <span class="hint">USD per day</span></h2>${dailyBars}
+<section class="blk">${h2('Daily cost', GLOSSARY.dailyCost, 'USD per day')}${dailyBars}
 ${firstDay && lastDay ? `<div class="axis"><span>${esc(formatDate(firstDay))}</span><span>${esc(formatDate(lastDay))}</span></div>` : ''}</section>
 <section class="blk cols">
-<div><h2>Activity by hour <span class="hint">messages · local time</span></h2>${hourBars}<div class="axis"><span>12 AM</span><span>noon</span><span>11 PM</span></div></div>
-<div><h2>By weekday <span class="hint">messages</span></h2>${weekdayBars}<div class="axis days">${WEEKDAYS.map((d) => `<span>${d[0]}</span>`).join('')}</div></div>
+<div>${h2('Activity by hour', GLOSSARY.byHour, 'messages · local time')}${hourBars}<div class="axis"><span>12 AM</span><span>noon</span><span>11 PM</span></div></div>
+<div>${h2('By weekday', GLOSSARY.byWeekday, 'messages')}${weekdayBars}<div class="axis days">${WEEKDAYS.map((d) => `<span>${d[0]}</span>`).join('')}</div></div>
 </section>
 <section class="blk lists">
-<div><h2>By tool</h2><div class="barlist">${byTool}</div></div>
-<div><h2>By model</h2><div class="barlist">${byModel}</div></div>
-<div><h2>By project</h2><div class="barlist">${byProject}</div></div>
+<div>${h2('By tool', GLOSSARY.byTool)}<div class="barlist">${byTool}</div></div>
+<div>${h2('By model', GLOSSARY.byModel)}<div class="barlist">${byModel}</div></div>
+<div>${h2('By project', GLOSSARY.byProject)}<div class="barlist">${byProject}</div></div>
+${branchSection(data.byBranch)}
 </section>
+${subagentSection(data.subagents)}
+${sessionSection(data.topSessions, data.totalSessions)}
 <footer class="rep"><span>sessions usage report</span><span>${s.activeDays} active days</span></footer>
 </div>
 <div class="tip" id="tip"></div>

@@ -14,7 +14,17 @@ import type {
   ToolId,
 } from './types.ts';
 
+import type { CacheStats, SubagentReport, BranchBreakdown, SessionCost, ReportFacets } from './facets.ts';
+
 export type { ToolBreakdown, ProviderBreakdown, ModelBreakdown, ProjectBreakdown, DailyEntry, ModelRef, ToolId };
+export type {
+  CacheStats,
+  SubagentReport,
+  SubagentTypeBreakdown,
+  SubagentDispatch,
+  BranchBreakdown,
+  SessionCost,
+} from './facets.ts';
 
 export interface UsageSummary {
   totalCostUSD: number;
@@ -48,6 +58,9 @@ export interface UsageInsights {
 export interface PricingWarning {
   model: string;
   tokens: number;
+  /** Set when the tokens were billed at a same-family rate instead of being
+   *  zeroed. The cost is an estimate; absent means it really was counted as $0. */
+  pricedAs?: string;
 }
 
 export interface UsageReport {
@@ -64,11 +77,18 @@ export interface UsageReport {
   daily: DailyEntry[];
   insights: UsageInsights;
   warnings: PricingWarning[]; // unpriced models with tokens; [] when all priced
+  // Sessions-owned facets (see ./facets.ts) — dimensions the vendored
+  // aggregation does not model, computed from the same events.
+  cache: CacheStats;
+  subagents: SubagentReport;
+  byBranch: BranchBreakdown[];
+  topSessions: SessionCost[];
+  totalSessions: number;
 }
 
 // Map the internal aggregation result to the sessions-owned public schema,
 // dropping tokenmaxing/website-specific fields (weeklyHighlights + per-week PR counts).
-export function toUsageReport(data: TokenmaxingData): UsageReport {
+export function toUsageReport(data: TokenmaxingData, facets: ReportFacets): UsageReport {
   return {
     generator: 'sessions',
     version: 1,
@@ -95,5 +115,10 @@ export function toUsageReport(data: TokenmaxingData): UsageReport {
     // Kept pure: runReport overwrites this with drainPricingWarnings() after
     // aggregation. toUsageReport itself prices nothing, so it starts empty.
     warnings: [],
+    cache: facets.cache,
+    subagents: facets.subagents,
+    byBranch: facets.byBranch,
+    topSessions: facets.topSessions,
+    totalSessions: facets.totalSessions,
   };
 }
