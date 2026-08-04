@@ -3,7 +3,7 @@
 // Source: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 import type { ModelPricing } from './pricing.ts';
 
-export const GENERATED_AT = '2026-07-12T02:36:05.556Z';
+export const GENERATED_AT = '2026-08-04T22:02:23.642Z';
 export const SOURCE_COMMIT = 'litellm-main';
 
 export const PRICING: Record<string, ModelPricing> = {
@@ -126,6 +126,12 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheWritePerToken: 0.00000625,
   },
   'claude-opus-4-8': {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.000025,
+    cacheReadPerToken: 5e-7,
+    cacheWritePerToken: 0.00000625,
+  },
+  'claude-opus-5': {
     inputPerToken: 0.000005,
     outputPerToken: 0.000025,
     cacheReadPerToken: 5e-7,
@@ -294,10 +300,10 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheWritePerToken: 0.00000625,
   },
   'gpt-5.6-luna': {
-    inputPerToken: 0.000001,
-    outputPerToken: 0.000006,
-    cacheReadPerToken: 1e-7,
-    cacheWritePerToken: 0.00000125,
+    inputPerToken: 2e-7,
+    outputPerToken: 0.0000012,
+    cacheReadPerToken: 2e-8,
+    cacheWritePerToken: 2.5e-7,
   },
   'gpt-5.6-sol': {
     inputPerToken: 0.000005,
@@ -306,10 +312,10 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheWritePerToken: 0.00000625,
   },
   'gpt-5.6-terra': {
-    inputPerToken: 0.0000025,
-    outputPerToken: 0.000015,
-    cacheReadPerToken: 2.5e-7,
-    cacheWritePerToken: 0.000003125,
+    inputPerToken: 0.000002,
+    outputPerToken: 0.000012,
+    cacheReadPerToken: 2e-7,
+    cacheWritePerToken: 0.0000025,
   },
   'gpt-audio': { inputPerToken: 0.0000025, outputPerToken: 0.00001 },
   'gpt-audio-1.5': { inputPerToken: 0.0000025, outputPerToken: 0.00001 },
