@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parseClaudeCode } from './parsers/claude-code.ts';
 import { parseCodex } from './parsers/codex.ts';
 import { parsePi } from './parsers/pi.ts';
+import { parseOmp } from './parsers/omp.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-parsers-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -327,6 +328,17 @@ describe('parsePi dedup', () => {
     writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'resp_9', cost: 0.1 })]));
     const events = await parsePi(root);
     expect(events[0]!.dedupKey).toBe('pi|resp_9');
+  });
+});
+
+describe('parseOmp dedup', () => {
+  test('relabels Pi dedup keys so responses from different tools cannot collide', async () => {
+    const root = join(tmp, 'omp-prefix');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'resp_9', cost: 0.1 })]));
+    const events = await parseOmp(root);
+    expect(events[0]!.tool).toBe('omp');
+    expect(events[0]!.dedupKey).toBe('omp|resp_9');
   });
 });
 
